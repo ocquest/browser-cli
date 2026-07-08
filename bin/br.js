@@ -54,7 +54,8 @@ function send(path, method = 'GET', body) {
 program
   .command('start')
   .description('Start the headless browser daemon process.')
-  .action(async () => {
+  .option('-k, --api-key <key>', 'API key for LLM features (also via BR_LLM_API_KEY env var)')
+  .action(async (opts) => {
     const pid = getRunningPid();
     if (pid) {
       try {
@@ -77,9 +78,14 @@ program
       }
     }
 
+    // Pass API key to daemon via env var
+    const env = { ...process.env };
+    if (opts.apiKey) env.BR_LLM_API_KEY = opts.apiKey;
+
     const child = spawn(process.execPath, [path.join(__dirname, '../daemon.js')], {
       detached: true,
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env
     });
 
     let stdout = '';
@@ -520,6 +526,43 @@ program
       console.log(JSON.stringify(parsed, null, 2));
     } catch (error) {
       console.error('Error calibrating:', error);
+    }
+  });
+
+program
+  .command('llm')
+  .description('Send a text prompt to the LLM and print the response. Requires BR_LLM_API_KEY or --api-key on start.')
+  .argument('<prompt...>', 'The prompt text to send.')
+  .action(async (prompt) => {
+    try {
+      const text = prompt.join(' ');
+      const result = await send('/llm/chat', 'POST', { messages: [text] });
+      const parsed = JSON.parse(result);
+      console.log(parsed.result || result);
+    } catch (error) {
+      console.error('Error calling LLM:', error);
+    }
+  });
+
+program
+  .command('solve-slide-captcha')
+  .description('Attempt to solve a slide captcha on the current page using LLM vision + ydotool drag.')
+  .option('-b, --background <selector>', 'CSS selector for the background image element')
+  .option('-t, --tile <selector>', 'CSS selector for the puzzle tile element')
+  .option('-s, --slider <selector>', 'CSS selector for the slider track element')
+  .action(async (opts) => {
+    try {
+      const body = {};
+      if (opts.background) body.backgroundSelector = opts.background;
+      if (opts.tile) body.tileSelector = opts.tile;
+      if (opts.slider) body.trackSelector = opts.slider;
+      const result = JSON.parse(await send('/solve-slide-captcha', 'POST', body));
+      console.log('LLM analysis:', result.llmAnalysis);
+      console.log('Target X offset:', result.targetX);
+      console.log('Dragged from:', result.dragFrom.x, result.dragFrom.y, 'to:', result.dragTo.x, result.dragTo.y);
+      if (result.success) console.log('✓ Captcha solved (attempted)');
+    } catch (error) {
+      console.error('Error solving captcha:', error);
     }
   });
 

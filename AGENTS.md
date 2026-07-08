@@ -45,6 +45,9 @@ br start                                  # launches headful Chromium + Express 
 | `br fullscreen` | `requestFullscreen()` API, falls back to F11 |
 | `br scrollIntoView <selector>` / `br scrollTo <pct>` / `br nextChunk` / `br prevChunk` | scrolling |
 | `br history` / `br clear-history` | action history |
+| `br llm <prompt>` | send text prompt to configured LLM |
+| `br solve-slide-captcha` | attempt to solve a slide captcha using LLM vision + ydotool drag |
+| `br start --api-key <key>` | start daemon with LLM API key (also via `BR_LLM_API_KEY` env var) |
 
 `selectorOrId` params accept either a CSS selector **or** a numeric node ID from `view-tree`. The daemon resolves IDs to XPath internally.
 

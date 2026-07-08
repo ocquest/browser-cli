@@ -8,6 +8,7 @@ const util = require('util');
 const execAsync = util.promisify(require('child_process').exec);
 const os = require('os');
 const path = require('path');
+const llm = require('./lib/llm');
 
 function getProxyConfig() {
   const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || '';
@@ -960,6 +961,245 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
       res.status(500).send(err.message);
     }
   });
+
+  app.post('/llm/chat', async (req, res) => {
+    try {
+      const { system, messages, images } = req.body;
+      if (!messages || !messages.length) return res.status(400).send('missing messages');
+      const result = await llm.chat({ system, messages, images });
+      res.json({ result });
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
+  app.post('/solve-slide-captcha', async (req, res) => {
+    try {
+      const page = getActivePage();
+      const { backgroundSelector, tileSelector, trackSelector } = req.body;
+
+      const bgSel = backgroundSelector || '.gc-picture, .slide-captcha-block canvas:first-child, [class*="block"] canvas, .captcha-body canvas';
+      const tileSel = tileSelector || '.gc-tile, .slide-captcha-block canvas:last-child, [class*="tile"] canvas, .captcha-tile';
+      const trkSel = trackSelector || '.gc-drag-slide-bar, .slide-captcha-slider, [class*="slider"], [class*="track"], button[class*="slide"]';
+
+      // Helper: resolve selector to element
+      const resolveEl = async (sel) => {
+        const isNumericId = !isNaN(sel) && !isNaN(parseFloat(sel));
+        const resolved = await resolveSelector(sel);
+        return isNumericId ? await page.$('xpath=' + resolved) : await page.$(resolved);
+      };
+
+      // Helper: scroll captcha area into view
+      const scrollToCaptcha = async () => {
+        // First try to find the slide captcha section heading
+        const found = await page.evaluate(() => {
+          const h3s = document.querySelectorAll('h3');
+          for (const h3 of h3s) {
+            if (h3.textContent.includes('Slide')) {
+              h3.scrollIntoView({ behavior: 'instant', block: 'center' });
+              return true;
+            }
+          }
+          return false;
+        });
+        await new Promise(r => setTimeout(r, 500));
+        return found;
+      };
+
+      await scrollToCaptcha();
+
+      // Helper: take screenshot of element with coordinate grid overlay
+      // This forces a screenshot even if element has a data URL, to show the grid
+      const screenshotBgWithGrid = async (sel) => {
+        const el = await resolveEl(sel);
+        if (!el) return null;
+        await el.scrollIntoViewIfNeeded();
+        await new Promise(r => setTimeout(r, 300));
+        const box = await el.boundingBox();
+        if (!box) return null;
+
+        // Overlay coordinate grid on top of the element
+        await page.evaluate(({ box }) => {
+          const overlay = document.createElement('div');
+          overlay.id = '__br_grid';
+          overlay.style.cssText = `position:fixed; top:${box.y}px; left:${box.x}px; width:${box.width}px; height:${box.height}px; pointer-events:none; z-index:99999; overflow:visible;`;
+
+          const step = Math.max(10, Math.round(box.width / 15));
+          for (let x = 0; x <= box.width; x += step) {
+            const line = document.createElement('div');
+            line.style.cssText = `position:absolute; left:${x}px; top:0; width:0; height:100%; border-left:2px solid rgba(255,0,0,0.6);`;
+            overlay.appendChild(line);
+
+            const label = document.createElement('span');
+            label.textContent = x + 'px';
+            label.style.cssText = `position:absolute; left:${x-15}px; top:0; font-size:10px; color:#ff0000; font-weight:bold; font-family:monospace; background:rgba(255,255,255,0.9); padding:0 2px; line-height:14px; white-space:nowrap;`;
+            overlay.appendChild(label);
+          }
+
+          document.body.appendChild(overlay);
+        }, { box });
+
+        await new Promise(r => setTimeout(r, 150));
+
+        const vp = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+        const clip = {
+          x: Math.max(0, box.x),
+          y: Math.max(0, box.y),
+          width: Math.min(box.width, vp.w - Math.max(0, box.x)),
+          height: Math.min(box.height, vp.h - Math.max(0, box.y))
+        };
+
+        let buffer = null;
+        if (clip.width > 0 && clip.height > 0) {
+          buffer = await page.screenshot({ clip, type: 'png' });
+        }
+
+        // Remove grid overlay
+        await page.evaluate(() => {
+          const g = document.getElementById('__br_grid');
+          if (g) g.remove();
+        });
+
+        return buffer ? buffer.toString('base64') : null;
+      };
+
+      // Background: always screenshot with coordinate grid
+      const bgBase64 = await screenshotBgWithGrid(bgSel);
+
+      // Tile: extract clean data URL from img src (or fallback screenshot)
+      const tileBase64 = await (async () => {
+        const el = await resolveEl(tileSel);
+        if (!el) return null;
+        const cleanSrc = await page.evaluate(el => {
+          if (el.tagName === 'IMG') {
+            const s = el.src || '';
+            if (s.startsWith('data:image/')) return s.split(',')[1];
+          }
+          if (el.tagName === 'CANVAS') return el.toDataURL('image/png').split(',')[1];
+          const childImg = el.querySelector('img');
+          if (childImg) {
+            const s = childImg.src || '';
+            if (s.startsWith('data:image/')) return s.split(',')[1];
+          }
+          return null;
+        }, el);
+        if (cleanSrc) return cleanSrc;
+        // fallback screenshot
+        const box = await el.boundingBox();
+        if (!box) return null;
+        const vp = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+        const clip = {
+          x: Math.max(0, box.x),
+          y: Math.max(0, box.y),
+          width: Math.min(box.width, vp.w - Math.max(0, box.x)),
+          height: Math.min(box.height, vp.h - Math.max(0, box.y))
+        };
+        if (clip.width <= 0 || clip.height <= 0) return null;
+        const buffer = await page.screenshot({ clip, type: 'png' });
+        return buffer.toString('base64');
+      })();
+
+      if (!bgBase64 || !tileBase64) {
+        return res.status(400).send('Could not find captcha elements. Use view-tree to locate them and pass selectors explicitly.');
+      }
+
+      // Ask LLM for the offset
+      const prompt = `This is a slide captcha background image with a coordinate grid overlaid. Red vertical lines mark pixel positions from the left edge, with numbers labeled at the top.
+
+The background image has a notch (cut-out area) where a puzzle piece needs to be placed. Look at the grid labels to find the X coordinate of the CENTER of the notch.
+
+Return ONLY the number: <answer>X</answer> where X is the pixel position.`;
+
+      const llmResponse = await llm.chat({
+        system: 'You are a captcha solver. Look at the grid on the background image and report the X coordinate of the notch center in <answer>X</answer> format.',
+        messages: [prompt],
+        images: [bgBase64, tileBase64]
+      });
+
+      const match = llmResponse.match(/<answer>\s*(\d{1,4})\s*<\/answer>/);
+      if (!match) {
+        return res.status(400).send('Could not determine offset from LLM: ' + llmResponse);
+      }
+      const targetX = parseInt(match[1], 10);
+
+      // Get all element positions in one shot just before drag
+      await scrollToCaptcha();
+      await new Promise(r => setTimeout(r, 300));
+
+      const coords = await page.evaluate(({ trkSel, blockSel, bgSel }) => {
+        const bar = document.querySelector(trkSel);
+        if (!bar) return null;
+        const barRect = bar.getBoundingClientRect();
+
+        const block = document.querySelector(blockSel);
+        const blockRect = block ? block.getBoundingClientRect() : null;
+
+        const bg = document.querySelector(bgSel);
+        const bgRect = bg ? bg.getBoundingClientRect() : null;
+
+        return {
+          bar: { x: barRect.x, y: barRect.y, w: barRect.width, h: barRect.height },
+          block: blockRect ? { x: blockRect.x, y: blockRect.y, w: blockRect.width, h: blockRect.height } : null,
+          bg: bgRect ? { x: bgRect.x, y: bgRect.y, w: bgRect.width, h: bgRect.height } : null
+        };
+      }, { trkSel, blockSel: `${trkSel} .gc-drag-block, ${trkSel} [class*="block"], ${trkSel} [class*="handle"], ${trkSel} [class*="thumb"], ${trkSel} button`, bgSel });
+
+      if (!coords || !coords.bar) return res.status(400).send('Slider track not found');
+
+      // Convert page coords to screen coords using window position
+      const windowPos = await getChromiumWindowPos();
+      if (!windowPos) return res.status(400).send('Browser window not found');
+
+      const toScreenX = (pageX) => Math.round(windowPos.x + pageX + calibrationOffset.x);
+      const toScreenY = (pageY) => Math.round(windowPos.y + pageY + calibrationOffset.y);
+
+      let fromX, fromY, toX, toY;
+
+      if (coords.block) {
+        fromX = toScreenX(coords.block.x + coords.block.w / 2);
+        fromY = toScreenY(coords.block.y + coords.block.h / 2);
+      } else {
+        fromX = toScreenX(coords.bar.x + 20);
+        fromY = toScreenY(coords.bar.y + coords.bar.h / 2);
+      }
+
+      if (coords.bg) {
+        toX = toScreenX(coords.bg.x + targetX);
+      } else {
+        toX = toScreenX(coords.bar.x + targetX);
+      }
+      toY = fromY;
+
+      // Perform the drag
+      await focusChromiumWindow();
+      await new Promise(r => setTimeout(r, 50));
+      await naturalMouseMove(fromX, fromY);
+      await new Promise(r => setTimeout(r, 80));
+      await execAsync(`ydotool click 0x40`);
+      await new Promise(r => setTimeout(r, 120));
+      await naturalMouseMove(toX, toY);
+      await new Promise(r => setTimeout(r, 80));
+      await execAsync(`ydotool click 0x80`);
+
+      record('solve-slide-captcha', { targetX, fromX, fromY, toX, toY });
+
+      res.json({
+        success: true,
+        llmAnalysis: llmResponse,
+        targetX,
+        bgWidth: coords.bg ? coords.bg.w : null,
+        dragFrom: { x: Math.round(fromX), y: Math.round(fromY) },
+        dragTo: { x: Math.round(toX), y: Math.round(toY) }
+      });
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
+  // Configure LLM
+  if (process.env.BR_LLM_API_KEY) {
+    llm.configure({ apiKey: process.env.BR_LLM_API_KEY });
+  }
 
   const port = 3030;
   app.listen(port, () => {
