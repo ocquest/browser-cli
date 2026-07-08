@@ -44,8 +44,8 @@ ydotoold &
 
 | Command | Description |
 |---------|-------------|
-| `br click <selector>` | Click via Playwright (detectable) |
-| `br yclick <id>` | Click via ydotool (undetectable system-level) |
+| `br yclick <id>` | **RECOMMENDED** — Click via ydotool (undetectable system-level) |
+| `br click <selector>` | FALLBACK — Click via Playwright (detectable, use if yclick fails) |
 
 `yclick` uses **natural mouse movement**:
 - Linear path from current cursor position
@@ -58,7 +58,7 @@ ydotoold &
 
 | Command | Description |
 |---------|-------------|
-| `br ydrag <fromId> <toId>` | Drag element A to element B via ydotool |
+| `br ydrag <fromId> <toId>` | **RECOMMENDED** — Drag element A to element B via ydotool |
 
 Uses `ydotool click 0x40` (mousedown) → natural move → `ydotool click 0x80` (mouseup).
 

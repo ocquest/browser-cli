@@ -86,13 +86,86 @@ the CLI prints the error output so you can diagnose the issue.
 br goto https://example.com
 ```
 
-### Click an element
+### Click an element (RECOMMENDED — undetectable)
+
+```bash
+br yclick 22
+```
+
+Uses **ydotool** (system-level mouse events) instead of Playwright's synthetic clicks.
+The mouse movement is undetectable by bot detection systems.
+
+Features:
+- **Natural movement**: linear path with ease-in-out acceleration, random jitter (±1.2px), variable speed
+- **Scrolls into view** automatically before clicking
+- **Node ID based**: use the numeric ID from `br view-tree` output
+- **Fullscreen required**: works best after `br fullscreen` to eliminate browser chrome offset
+
+### Click an element (FALLBACK — detectable)
 
 ```bash
 br click "button.submit"
 ```
 
+Only use this if `yclick` fails. Playwright clicks are detectable by bot detection.
+
 Commands that accept a CSS selector (like `click`, `fill`, `scrollIntoView`, `type`) can also accept a numeric ID. These IDs are displayed in the output of `br view-tree` and allow for direct interaction with elements identified in the tree.
+
+### ydotool system-level click (RECOMMENDED — undetectable)
+
+```bash
+br yclick 22
+```
+
+Clicks an element using **ydotool** (system-level mouse events) instead of
+Playwright's synthetic clicks. The mouse movement is undetectable by bot
+detection systems because it uses real OS-level input.
+
+Features:
+- **Natural movement**: linear path with ease-in-out acceleration,
+  random jitter (±1.2px), and variable speed
+- **Scrolls into view** automatically before clicking
+- **Node ID based**: use the numeric ID from `br view-tree` output
+- **Fullscreen required**: works best after `br fullscreen` to eliminate
+  browser chrome offset
+
+### Click an element (FALLBACK — detectable)
+
+```bash
+br click "button.submit"
+```
+
+Only use this if `yclick` fails. Playwright clicks are detectable by bot detection systems.
+
+### Fullscreen mode
+
+```bash
+br fullscreen
+```
+
+Enters browser fullscreen via `requestFullscreen()` API. Eliminates
+browser chrome offset entirely, making `yclick` coordinates accurate.
+
+### Drag & drop (RECOMMENDED — undetectable)
+
+```bash
+br ydrag <fromNodeId> <toNodeId>
+```
+
+System-level drag and drop using ydotool. Example:
+```bash
+br view-tree --only-matches  # find node IDs
+br ydrag 37 38               # drag element 37 to drop zone 38
+```
+
+### Calibration
+
+```bash
+br calibrate
+```
+
+Auto-calibrates the ydotool click offset by navigating to a calibration
+grid, clicking 5 test points (corners + center), and computing the offset.
 
 ### Scroll element into view
 
@@ -201,54 +274,6 @@ br switch-tab 1
 ```bash
 br stop
 ```
-
-### ydotool system-level click (undetectable)
-
-```bash
-br yclick 22
-```
-
-Clicks an element using **ydotool** (system-level mouse events) instead of
-Playwright's synthetic clicks. The mouse movement is undetectable by bot
-detection systems because it uses real OS-level input.
-
-Features:
-- **Natural movement**: linear path with ease-in-out acceleration,
-  random jitter (±1.2px), and variable speed
-- **Scrolls into view** automatically before clicking
-- **Node ID based**: use the numeric ID from `br view-tree` output
-- **Fullscreen required**: works best after `br fullscreen` to eliminate
-  browser chrome offset
-
-### Fullscreen mode
-
-```bash
-br fullscreen
-```
-
-Enters browser fullscreen via `requestFullscreen()` API. Eliminates
-browser chrome offset entirely, making `yclick` coordinates accurate.
-
-### Drag & drop
-
-```bash
-br ydrag <fromNodeId> <toNodeId>
-```
-
-System-level drag and drop using ydotool. Example:
-```bash
-br view-tree --only-matches  # find node IDs
-br ydrag 37 38               # drag element 37 to drop zone 38
-```
-
-### Calibration
-
-```bash
-br calibrate
-```
-
-Auto-calibrates the ydotool click offset by navigating to a calibration
-grid, clicking 5 test points (corners + center), and computing the offset.
 
 ### Test page
 

@@ -258,7 +258,7 @@ program
 
 program
   .command('click')
-  .description('Click an element matching the specified CSS selector.')
+  .description('**(FALLBACK)** Click an element using Playwright (detectable). Prefer "br yclick" instead.')
   .argument('<selectorOrId>', 'The CSS selector or node ID for the element to click.')
   .action(async (selector) => {
     try {
@@ -438,7 +438,7 @@ program
 
 program
   .command('yclick')
-  .description('Click an element using ydotool with natural mouse movement (undetectable).')
+  .description('**(RECOMMENDED)** Click an element using ydotool with natural mouse movement (undetectable).')
   .argument('<selectorOrId>', 'Node ID from view-tree (e.g. "22"), or CSS/XPath selector.')
   .action(async (selector) => {
     try {
@@ -463,7 +463,7 @@ program
 
 program
   .command('ydrag')
-  .description('Drag from one element to another using ydotool (mousedown → move → mouseup).')
+  .description('**(RECOMMENDED)** Drag from one element to another using ydotool (mousedown → move → mouseup).')
   .argument('<fromSelector>', 'Node ID or selector for the source (draggable) element.')
   .argument('<toSelector>', 'Node ID or selector for the target (drop zone) element.')
   .action(async (from, to) => {

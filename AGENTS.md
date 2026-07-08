@@ -14,25 +14,35 @@ br start                                  # launches headful Chromium + Express 
 - **Sub-30 second start**: daemon writes PID to `daemon.pid`, CLI waits for `"br daemon running"` on stdout with a 5s timeout.
 
 ## Commands (all require running daemon)
+
+### Primary methods (ydotool — undetectable, recommended)
+| Command | Note |
+|---------|------|
+| `br yclick <id>` | **RECOMMENDED** — ydotool system-level click (undetectable); IDs come from `view-tree` |
+| `br ydrag <fromId> <toId>` | ydotool drag-and-drop |
+| `br calibrate` | auto-calibrate ydotool click offset |
+
+### Fallback methods (Playwright — detectable, use only if ydotool fails)
+| Command | Note |
+|---------|------|
+| `br click <selectorOrId>` | FALLBACK — Playwright click (detectable) |
+| `br fill <selector> <text>` | form fill |
+| `br fill-secret <selector> <ENV_VAR>` | reads secret from env var, masks in HTML output |
+| `br type <selector> <text>` | character-by-character typing |
+| `br press <key>` | key press (e.g. `Enter`) |
+
+### Other commands
 | Command | Note |
 |---------|------|
 | `br start` / `br stop` | daemon lifecycle |
 | `br goto <url>` | navigate |
 | `br view-tree [--role --tag --match --max-depth --only-matches]` | accessibility/DOM tree with numeric node IDs |
-| `br click <selectorOrId>` | Playwright click (detectable) |
-| `br yclick <id>` | ydotool system-level click (undetectable); IDs come from `view-tree` |
-| `br ydrag <fromId> <toId>` | ydotool drag-and-drop |
-| `br fill <selector> <text>` | form fill |
-| `br fill-secret <selector> <ENV_VAR>` | reads secret from env var, masks in HTML output |
-| `br type <selector> <text>` | character-by-character typing |
-| `br press <key>` | key press (e.g. `Enter`) |
 | `br eval <code>` | JS in page context |
 | `br view-html [--page N]` | paginated HTML (5KB chunks) |
 | `br screenshot [--base64]` | saves PNG to tmp, or `--base64` for base64 output |
 | `br screenshot-element <selector> [--margin N] [--base64]` | element screenshot with margin (default 10px) |
 | `br tabs` / `br switch-tab <index>` | tab management |
 | `br fullscreen` | `requestFullscreen()` API, falls back to F11 |
-| `br calibrate` | auto-calibrate ydotool click offset |
 | `br scrollIntoView <selector>` / `br scrollTo <pct>` / `br nextChunk` / `br prevChunk` | scrolling |
 | `br history` / `br clear-history` | action history |
 
