@@ -191,4 +191,67 @@ br switch-tab 1
 br stop
 ```
 
-The daemon runs a headless Chromium browser and exposes a small HTTP API. The CLI communicates with it to perform actions like navigation and clicking elements.
+### ydotool system-level click (undetectable)
+
+```bash
+br yclick 22
+```
+
+Clicks an element using **ydotool** (system-level mouse events) instead of
+Playwright's synthetic clicks. The mouse movement is undetectable by bot
+detection systems because it uses real OS-level input.
+
+Features:
+- **Natural movement**: linear path with ease-in-out acceleration,
+  random jitter (±1.2px), and variable speed
+- **Scrolls into view** automatically before clicking
+- **Node ID based**: use the numeric ID from `br view-tree` output
+- **Fullscreen required**: works best after `br fullscreen` to eliminate
+  browser chrome offset
+
+### Fullscreen mode
+
+```bash
+br fullscreen
+```
+
+Enters browser fullscreen via `requestFullscreen()` API. Eliminates
+browser chrome offset entirely, making `yclick` coordinates accurate.
+
+### Drag & drop
+
+```bash
+br ydrag <fromNodeId> <toNodeId>
+```
+
+System-level drag and drop using ydotool. Example:
+```bash
+br view-tree --only-matches  # find node IDs
+br ydrag 37 38               # drag element 37 to drop zone 38
+```
+
+### Calibration
+
+```bash
+br calibrate
+```
+
+Auto-calibrates the ydotool click offset by navigating to a calibration
+grid, clicking 5 test points (corners + center), and computing the offset.
+
+### Test page
+
+The daemon includes a test page at `http://localhost:3030/test` with
+buttons, inputs, checkboxes, radios, drag-and-drop, and an event log.
+
+## Local development
+
+```bash
+git clone <repo>
+cd browser-cli
+npm install
+alias br="node $PWD/bin/br.js"
+br start
+```
+
+See [docs/usage.md](docs/usage.md) for full documentation.
