@@ -476,6 +476,27 @@ program
   });
 
 program
+  .command('is-clickable')
+  .description('Check if an element is clickable or covered by another element (e.g. a modal or cookie banner).')
+  .argument('<selectorOrId>', 'CSS selector or node ID for the target element.')
+  .action(async (selector) => {
+    try {
+      const result = JSON.parse(await send('/is-clickable', 'POST', { selector }));
+      if (result.clickable) {
+        console.log('✓ Element is clickable');
+      } else {
+        console.log('✗ Not clickable:', result.reason || 'unknown');
+        if (result.covered) {
+          console.log('  Covered by: <' + result.coveringTag + (result.coveringId ? '#' + result.coveringId : '') + '>');
+          if (result.coveringText) console.log('  Cover text: "' + result.coveringText + '"');
+        }
+      }
+    } catch (error) {
+      console.error('Error checking clickable:', error);
+    }
+  });
+
+program
   .command('calibrate')
   .description('Calibrate the ydotool click offset.')
   .action(async () => {

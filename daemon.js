@@ -106,7 +106,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     try {
       const { stdout } = await execAsync('hyprctl clients -j');
       const clients = JSON.parse(stdout);
-      const win = clients.find(c => c.class === 'chromium-browser');
+      const win = clients.find(c => c.class.toLowerCase() === 'chromium-browser');
       if (!win) return null;
       return { x: win.at[0], y: win.at[1], width: win.size[0], height: win.size[1] };
     } catch (err) {
@@ -207,6 +207,53 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     }
   });
 
+  app.post('/is-clickable', async (req, res) => {
+    try {
+      const { selector } = req.body;
+      if (!selector) return res.status(400).send('missing selector');
+      const page = getActivePage();
+      const isNumericId = !isNaN(selector) && !isNaN(parseFloat(selector));
+      const resolved = await resolveSelector(selector);
+      const el = isNumericId ? await page.$('xpath=' + resolved) : await page.$(resolved);
+      if (!el) return res.json({ clickable: false, exists: false, reason: 'Element not found' });
+
+      const result = await page.evaluate((sel) => {
+        const target = document.querySelector(sel);
+        if (!target) return { clickable: false, exists: false, reason: 'Element not found' };
+
+        const rect = target.getBoundingClientRect();
+        const isVisible = target.offsetParent !== null && target.style.display !== 'none' && target.style.visibility !== 'hidden';
+        if (rect.width === 0 || rect.height === 0 || !isVisible) {
+          return { clickable: false, exists: true, reason: 'Element has zero dimensions or is hidden' };
+        }
+
+        const cx = rect.x + rect.width / 2;
+        const cy = rect.y + rect.height / 2;
+        const topEl = document.elementFromPoint(cx, cy);
+
+        if (!topEl) return { clickable: true, exists: true, reason: 'OK' };
+
+        const isSame = topEl === target || target.contains(topEl) || topEl.contains(target);
+        if (isSame) return { clickable: true, exists: true, reason: 'OK' };
+
+        return {
+          clickable: false,
+          exists: true,
+          covered: true,
+          coveringTag: topEl.tagName,
+          coveringId: topEl.id || null,
+          coveringClass: (typeof topEl.className === 'string') ? topEl.className : null,
+          coveringText: (topEl.textContent || '').trim().substring(0, 80),
+          reason: `Element is covered by <${topEl.tagName.toLowerCase()}${topEl.id ? '#'+topEl.id : ''}>`
+        };
+      }, resolved);
+
+      res.json(result);
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
   app.get('/tabs', async (req, res) => {
     try {
       const tabInfo = await Promise.all(pages.map(async (p, i) => ({
@@ -273,6 +320,55 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     try {
       const result = await getActivePage().evaluate(code);
       res.json({ result });
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
+  app.post('/fill', async (req, res) => {
+    const { selector, text } = req.body;
+    if (!selector || text === undefined) return res.status(400).send('missing selector or text');
+    try {
+      await getActivePage().fill(selector, text);
+      record('fill', { selector });
+      res.send('ok');
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
+  app.post('/fill-secret', async (req, res) => {
+    const { selector, secret } = req.body;
+    if (!selector || !secret) return res.status(400).send('missing selector or secret');
+    try {
+      await getActivePage().fill(selector, secret);
+      secrets.add(secret);
+      record('fill-secret', { selector });
+      res.send('ok');
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
+  app.post('/type', async (req, res) => {
+    const { selector, text } = req.body;
+    if (!selector || text === undefined) return res.status(400).send('missing selector or text');
+    try {
+      await getActivePage().type(selector, text);
+      record('type', { selector });
+      res.send('ok');
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
+  app.post('/press', async (req, res) => {
+    const { key } = req.body;
+    if (!key) return res.status(400).send('missing key');
+    try {
+      await getActivePage().press(key);
+      record('press', { key });
+      res.send('ok');
     } catch (err) {
       res.status(500).send(err.message);
     }
@@ -348,7 +444,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
 
         const root = buildTree(document.body, 0);
         return { tree: root, idToXPath };
-      }, { role, tag, match, maxDepth, onlyMatches });
+      }, { role: roleFilter, tag, match, maxDepth, onlyMatches });
 
       lastIdToXPath = tree.idToXPath;
       const result = tree.tree;
@@ -684,9 +780,10 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
 
   async function getElementScreenPos(selector) {
     if (!selector) throw new Error('missing selector');
-    selector = await resolveSelector(selector);
+    const isNumericId = !isNaN(selector) && !isNaN(parseFloat(selector));
+    const resolved = await resolveSelector(selector);
     const page = getActivePage();
-    const element = await page.$('xpath=' + selector);
+    const element = isNumericId ? await page.$('xpath=' + resolved) : await page.$(resolved);
     if (!element) throw new Error(`Element not found for selector: ${selector}`);
     await element.scrollIntoViewIfNeeded();
     await new Promise(r => setTimeout(r, 100));
