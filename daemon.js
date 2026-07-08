@@ -9,6 +9,21 @@ const execAsync = util.promisify(require('child_process').exec);
 const os = require('os');
 const path = require('path');
 
+function getProxyConfig() {
+  const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || '';
+  if (!proxyUrl) return {};
+  try {
+    const url = new URL(proxyUrl);
+    return {
+      server: url.origin,
+      username: url.username ? decodeURIComponent(url.username) : undefined,
+      password: url.password ? decodeURIComponent(url.password) : undefined
+    };
+  } catch {
+    return {};
+  }
+}
+
 let lastIdToXPath = {}; // Global variable to store the last idToXPath mapping
 const secrets = new Set();
 const history = [];
@@ -23,7 +38,18 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
 (async () => {
   // Clean user data dir to avoid "restore pages" prompt
   try { fs.rmSync(tmpUserDataDir, { recursive: true, force: true }); } catch (_) {}
-  const context = await chromium.launchPersistentContext(tmpUserDataDir, { headless: false, viewport: null, args: ['--start-fullscreen', '--disable-session-crashed-bubble', '--disable-features=SessionCrashedBubble'] });
+  const proxyConfig = getProxyConfig();
+  const launchOptions = {
+    headless: false,
+    viewport: null,
+    args: ['--start-fullscreen', '--disable-session-crashed-bubble', '--disable-features=SessionCrashedBubble', '--disable-automation', '--disable-blink-features=AutomationControlled'],
+    ignoreDefaultArgs: ['--enable-automation'],
+    proxy: proxyConfig.server ? { server: proxyConfig.server, username: proxyConfig.username, password: proxyConfig.password } : undefined
+  };
+  const context = await chromium.launchPersistentContext(tmpUserDataDir, launchOptions);
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  });
   const browser = await context.browser();
   let pages = [];
   let activePage;
@@ -133,6 +159,54 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     res.send('ok');
   });
 
+  app.get('/screenshot', async (req, res) => {
+    try {
+      const page = getActivePage();
+      const buffer = await page.screenshot({ type: 'png' });
+      if (req.query.base64 === 'true') {
+        res.send(buffer.toString('base64'));
+      } else {
+        const filePath = path.join(os.tmpdir(), `br-screenshot-${Date.now()}.png`);
+        fs.writeFileSync(filePath, buffer);
+        res.send(filePath);
+      }
+      record('screenshot', { base64: req.query.base64 === 'true' });
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
+  app.post('/screenshot-element', async (req, res) => {
+    try {
+      const { selector, margin = 10, base64 } = req.body;
+      if (!selector) return res.status(400).send('missing selector');
+      const page = getActivePage();
+      const isNumericId = !isNaN(selector) && !isNaN(parseFloat(selector));
+      const resolved = await resolveSelector(selector);
+      const el = isNumericId ? await page.$('xpath=' + resolved) : await page.$(resolved);
+      if (!el) return res.status(400).send('Element not found');
+      const box = await el.boundingBox();
+      if (!box) return res.status(400).send('Element not visible');
+      const clip = {
+        x: Math.max(0, box.x - margin),
+        y: Math.max(0, box.y - margin),
+        width: box.width + 2 * margin,
+        height: box.height + 2 * margin
+      };
+      const buffer = await page.screenshot({ clip, type: 'png' });
+      if (base64) {
+        res.send(buffer.toString('base64'));
+      } else {
+        const filePath = path.join(os.tmpdir(), `br-screenshot-el-${Date.now()}.png`);
+        fs.writeFileSync(filePath, buffer);
+        res.send(filePath);
+      }
+      record('screenshot-element', { selector, margin, base64: !!base64 });
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
   app.get('/tabs', async (req, res) => {
     try {
       const tabInfo = await Promise.all(pages.map(async (p, i) => ({
@@ -225,8 +299,8 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
   app.post('/view-tree', async (req, res) => {
     try {
       const page = getActivePage();
-      const { role, tag, match, maxDepth, onlyMatches } = req.body;
-      const tree = await page.evaluate(({ role, tag, match, maxDepth, onlyMatches }) => {
+      const { role: roleFilter, tag, match, maxDepth, onlyMatches } = req.body;
+      const tree = await page.evaluate(({ role: roleFilter, tag, match, maxDepth, onlyMatches }) => {
         const idToXPath = {};
         let idCounter = 0;
 
@@ -259,7 +333,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
           if (name) line += ': ' + name;
 
           let passes = true;
-          if (role && !role.includes(reqRole)) passes = false;
+          if (roleFilter && !roleFilter.split(',').includes(role)) passes = false;
           if (tag && !tag.split(',').includes(tagName)) passes = false;
           if (match && !name.toLowerCase().includes(match.toLowerCase())) passes = false;
 

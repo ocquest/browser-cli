@@ -78,7 +78,8 @@ Calls `document.documentElement.requestFullscreen()` first, falls back to F11 ke
 | `br type <selector> <text>` | Type text character by character |
 | `br fill <selector> <text>` | Fill form field |
 | `br press <key>` | Press keyboard key |
-| `br screenshot` | Capture page screenshot |
+| `br screenshot [--base64]` | Capture page screenshot (PNG or base64) |
+| `br screenshot-element <selector> [--margin N] [--base64]` | Capture element screenshot with margin |
 
 ### Navigation & View
 
@@ -150,6 +151,8 @@ The daemon runs as an Express server on port 3030. The CLI sends HTTP requests t
 | POST | `/view-tree` | Accessibility tree |
 | POST | `/xpath-for-id` | Get XPath by node ID |
 | POST | `/fullscreen` | Enter fullscreen |
+| GET | `/screenshot?base64=true` | Page screenshot (PNG file or base64) |
+| POST | `/screenshot-element` | Element screenshot with margin |
 | GET | `/test` | Test page with interactive elements |
 | GET | `/calibrate-page` | Calibration grid HTML |
 | GET | `/calibrate` | Run calibration |

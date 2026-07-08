@@ -162,7 +162,18 @@ br clear-history
 
 ```bash
 br screenshot
+br screenshot --base64
 ```
+
+### Capture a screenshot of an element
+
+```bash
+br screenshot-element "#btn-1"
+br screenshot-element "#btn-1" --margin 20
+br screenshot-element "#btn-1" --margin 10 --base64
+```
+
+Screenshots an element by CSS selector or node ID with optional margin padding (default 10px). Use `--base64` to get base64 output instead of saving to a temp file.
 
 ### View accessibility and DOM tree
 
