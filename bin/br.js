@@ -55,6 +55,7 @@ program
   .command('start')
   .description('Start the headless browser daemon process.')
   .option('-k, --api-key <key>', 'API key for LLM features (also via BR_LLM_API_KEY env var)')
+  .option('-p, --proxy <url>', 'Proxy URL to use (e.g. http://user:pass@host:port). Default: no proxy.')
   .action(async (opts) => {
     const pid = getRunningPid();
     if (pid) {
@@ -78,9 +79,10 @@ program
       }
     }
 
-    // Pass API key to daemon via env var
+    // Pass API key and proxy to daemon via env vars
     const env = { ...process.env };
     if (opts.apiKey) env.BR_LLM_API_KEY = opts.apiKey;
+    if (opts.proxy) env.BR_PROXY = opts.proxy;
 
     const child = spawn(process.execPath, [path.join(__dirname, '../daemon.js')], {
       detached: true,

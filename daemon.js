@@ -11,7 +11,7 @@ const path = require('path');
 const llm = require('./lib/llm');
 
 function getProxyConfig() {
-  const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || '';
+  const proxyUrl = process.env.BR_PROXY || '';
   if (!proxyUrl) return {};
   try {
     const url = new URL(proxyUrl);
@@ -389,7 +389,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     const { key } = req.body;
     if (!key) return res.status(400).send('missing key');
     try {
-      await getActivePage().press(key);
+      await getActivePage().keyboard.press(key);
       record('press', { key });
       res.send('ok');
     } catch (err) {
@@ -810,8 +810,11 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
 
     // Check coverage and try to dismiss blockers
     const checkAndDismiss = async () => {
-      const result = await page.evaluate((sel) => {
-        const target = document.querySelector(sel);
+      const useXpath = isNumericId;
+      const result = await page.evaluate(({ sel, useXpath }) => {
+        const target = useXpath
+          ? document.evaluate(sel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
+          : document.querySelector(sel);
         if (!target) return { clickable: false, reason: 'Element not found' };
 
         const rect = target.getBoundingClientRect();
@@ -835,7 +838,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
           coveringText: (topEl.textContent || '').trim().substring(0, 80),
           reason: `Covered by <${topEl.tagName.toLowerCase()}${topEl.id ? '#'+topEl.id : ''}>`
         };
-      }, resolved);
+      }, { sel: resolved, useXpath });
 
       return result;
     };
