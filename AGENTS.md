@@ -62,3 +62,6 @@ br start                                  # launches headful Chromium + Express 
 
 ## Test page
 `http://localhost:3030/test` — interactive page with buttons, inputs, drag-drop, event log.
+
+## AI agent guide
+See [docs/ai-guide.md](docs/ai-guide.md) for instructions on how AI agents should use `br` — read calmly, plan, then act.
