@@ -18,7 +18,7 @@ br start                                  # launches headful Chromium + Express 
 ### Primary methods (ydotool — undetectable, recommended)
 | Command | Note |
 |---------|------|
-| `br yclick <id>` | **RECOMMENDED** — ydotool system-level click (undetectable); IDs come from `view-tree` |
+| `br yclick <id>` | **RECOMMENDED** — ydotool system-level click (undetectable); IDs come from `view-tree`. Automatically detects and dismisses cookie banners / modals before clicking. |
 | `br ydrag <fromId> <toId>` | ydotool drag-and-drop |
 | `br calibrate` | auto-calibrate ydotool click offset |
 
@@ -50,6 +50,7 @@ br start                                  # launches headful Chromium + Express 
 
 ## Key details
 - **ydotool**: screen pixel coords are **divided by 2** before passing to ydotool. Left click = `0xC0`. Mouse down = `0x40`. Mouse up = `0x80`.
+- **Auto-dismiss blockers**: Before every `yclick`, the daemon checks if the element is covered by a modal/cookie banner and automatically tries to dismiss it.
 - **Hyprland-specific**: uses `hyprctl` for window focus, cursor position, and window geometry.
 - **New tabs** are automatically set as active.
 - **`fill-secret`** expects an **env var name** (not the secret value directly). Values are masked in `view-html`.

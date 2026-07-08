@@ -301,6 +301,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
 
   app.post('/yclick', async (req, res) => {
     try {
+      await ensureClickable(req.body.selector);
       const pos = await getElementScreenPos(req.body.selector);
       await focusChromiumWindow();
       await new Promise(r => setTimeout(r, 50));
@@ -776,6 +777,126 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
       selector = xpath;
     }
     return selector;
+  }
+
+  async function ensureClickable(selector) {
+    const isNumericId = !isNaN(selector) && !isNaN(parseFloat(selector));
+    const resolved = await resolveSelector(selector);
+    const page = getActivePage();
+    const element = isNumericId ? await page.$('xpath=' + resolved) : await page.$(resolved);
+    if (!element) throw new Error(`Element not found: ${selector}`);
+
+    // Check coverage and try to dismiss blockers
+    const checkAndDismiss = async () => {
+      const result = await page.evaluate((sel) => {
+        const target = document.querySelector(sel);
+        if (!target) return { clickable: false, reason: 'Element not found' };
+
+        const rect = target.getBoundingClientRect();
+        const isVisible = target.offsetParent !== null && target.style.display !== 'none' && target.style.visibility !== 'hidden';
+        if (rect.width === 0 || rect.height === 0 || !isVisible) {
+          return { clickable: false, reason: 'Element has zero dimensions or is hidden' };
+        }
+
+        const cx = rect.x + rect.width / 2;
+        const cy = rect.y + rect.height / 2;
+        const topEl = document.elementFromPoint(cx, cy);
+
+        if (!topEl || topEl === target || target.contains(topEl) || topEl.contains(target)) {
+          return { clickable: true };
+        }
+
+        return {
+          clickable: false,
+          coveringTag: topEl.tagName,
+          coveringId: topEl.id || null,
+          coveringText: (topEl.textContent || '').trim().substring(0, 80),
+          reason: `Covered by <${topEl.tagName.toLowerCase()}${topEl.id ? '#'+topEl.id : ''}>`
+        };
+      }, resolved);
+
+      return result;
+    };
+
+    let check = await checkAndDismiss();
+    if (check.clickable) return element;
+
+    // Try to dismiss common blockers
+    const acceptCookieViaEval = async () => {
+      await page.evaluate(() => {
+        // Try common cookie acceptance selectors
+        const selectors = [
+          '#sp-cc-accept',
+          '.fc-cta-consent',
+          '.cookie-accept',
+          'button[aria-label*="cookie" i]',
+          'button[aria-label*="accept" i]',
+          '#onetrust-accept-btn-handler',
+          '.cc-btn',
+          '.accept-cookies',
+          'button:has-text("Accept")',
+          'button:has-text("Aceptar")',
+          'button:has-text("Accept all")'
+        ];
+        for (const sel of selectors) {
+          const btn = document.querySelector(sel);
+          if (btn) { btn.click(); return true; }
+        }
+        // Try iframe cookie banners
+        const iframe = document.getElementById('fast-cmp-iframe') || document.querySelector('iframe[title*="cookie" i]');
+        if (iframe) {
+          try {
+            const doc = iframe.contentDocument || iframe.contentWindow.document;
+            const btn = doc.querySelector('button');
+            if (btn) { btn.click(); return true; }
+          } catch (_) {}
+        }
+        return false;
+      });
+    };
+
+    // If covered by an iframe, try clicking a button inside it
+    if (check.coveringTag === 'IFRAME' && check.coveringId) {
+      await page.evaluate((id) => {
+        const iframe = document.getElementById(id);
+        if (!iframe) return;
+        try {
+          const doc = iframe.contentDocument || iframe.contentWindow.document;
+          const btns = doc.querySelectorAll('button');
+          for (const btn of btns) { btn.click(); }
+        } catch (_) {}
+      }, check.coveringId);
+      await new Promise(r => setTimeout(r, 500));
+      check = await checkAndDismiss();
+      if (check.clickable) return element;
+    }
+
+    // Try generic dismiss: click the first button in the covering element
+    if (!check.clickable) {
+      await acceptCookieViaEval();
+      await new Promise(r => setTimeout(r, 500));
+      check = await checkAndDismiss();
+      if (check.clickable) return element;
+    }
+
+    // Try closing via overlay click (click top-center of covering element)
+    if (!check.clickable) {
+      await page.evaluate(() => {
+        const overlay = document.querySelector('[class*="modal"], [class*="overlay"], [class*="popup"], [class*="dialog"]');
+        if (overlay) {
+          const closeBtn = overlay.querySelector('button, [class*="close"], [aria-label*="close" i]');
+          if (closeBtn) closeBtn.click();
+        }
+      });
+      await new Promise(r => setTimeout(r, 500));
+      check = await checkAndDismiss();
+    }
+
+    if (!check.clickable) {
+      throw new Error(`Cannot click element: ${check.reason}${check.coveringText ? ' ("'+check.coveringText+'")' : ''}`);
+    }
+
+    return element;
   }
 
   async function getElementScreenPos(selector) {
