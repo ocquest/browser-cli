@@ -30,7 +30,8 @@ const secrets = new Set();
 const history = [];
 let calibrationOffset = { x: 0, y: 0 };
 
-function record(action, args = {}) {
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  function record(action, args = {}) {
   history.push({ action, args, timestamp: new Date().toISOString() });
 }
 
@@ -62,7 +63,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
   // Focus browser window (fullscreen via --start-fullscreen arg)
   setTimeout(async () => {
     try {
-      await execAsync('hyprctl dispatch focuswindow class:chromium-browser');
+      await execAsync('hyprctl dispatch focuswindow class:Chromium-browser');
     } catch (_) {}
   }, 1000);
 
@@ -117,7 +118,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
 
   async function focusChromiumWindow() {
     try {
-      await execAsync('hyprctl dispatch focuswindow class:chromium-browser');
+      await execAsync('hyprctl dispatch focuswindow class:Chromium-browser');
     } catch (_) {}
   }
 
@@ -976,11 +977,12 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
   app.post('/solve-slide-captcha', async (req, res) => {
     try {
       const page = getActivePage();
-      const { backgroundSelector, tileSelector, trackSelector } = req.body;
+      const { backgroundSelector, tileSelector, trackSelector, retries } = req.body;
+      const maxRetries = Math.min(retries || 2, 5);
 
-      const bgSel = backgroundSelector || '.gc-picture, .slide-captcha-block canvas:first-child, [class*="block"] canvas, .captcha-body canvas';
-      const tileSel = tileSelector || '.gc-tile, .slide-captcha-block canvas:last-child, [class*="tile"] canvas, .captcha-tile';
-      const trkSel = trackSelector || '.gc-drag-slide-bar, .slide-captcha-slider, [class*="slider"], [class*="track"], button[class*="slide"]';
+      const bgSel = backgroundSelector || '.gc-picture';
+      const tileSel = tileSelector || '.gc-tile';
+      const trkSel = trackSelector || '.gc-drag-slide-bar';
 
       // Helper: resolve selector to element
       const resolveEl = async (sel) => {
@@ -989,9 +991,23 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
         return isNumericId ? await page.$('xpath=' + resolved) : await page.$(resolved);
       };
 
+      // Helper: click the refresh button in the captcha to get a new puzzle
+      const refreshCaptcha = async (scope) => {
+        await page.evaluate((scope) => {
+          const w = document.querySelector(scope);
+          if (!w) return;
+          const iconBlock = w.querySelector('.gc-icon-block');
+          if (!iconBlock) return;
+          const svgs = iconBlock.querySelectorAll('svg');
+          if (svgs.length >= 2) {
+            svgs[svgs.length - 1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          }
+        }, scope);
+        await new Promise(r => setTimeout(r, 2000));
+      };
+
       // Helper: scroll captcha area into view
       const scrollToCaptcha = async () => {
-        // First try to find the slide captcha section heading
         const found = await page.evaluate(() => {
           const h3s = document.querySelectorAll('h3');
           for (const h3 of h3s) {
@@ -1006,11 +1022,25 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
         return found;
       };
 
+      // Auto-detect the correct slide captcha wrapper (handles multiple captchas on page)
+      const detectScope = async () => {
+        const wrapperSel = await page.evaluate(() => {
+          const wrappers = document.querySelectorAll('.go-captcha, .captcha-wrapper, [class*="captcha"][class*="slide"]');
+          for (const w of wrappers) {
+            if (w.querySelector('.gc-tile') && w.querySelector('.gc-drag-slide-bar')) {
+              w.dataset.brSlide = '1';
+              return '.go-captcha[data-br-slide="1"]';
+            }
+          }
+          return null;
+        });
+        return wrapperSel || '';
+      };
+      let scope = await detectScope();
       await scrollToCaptcha();
 
-      // Helper: take screenshot of element with coordinate grid overlay
-      // This forces a screenshot even if element has a data URL, to show the grid
-      const screenshotBgWithGrid = async (sel) => {
+      // Helper: take background screenshot (with or without coordinate grid)
+      const screenshotBg = async (sel, withGrid) => {
         const el = await resolveEl(sel);
         if (!el) return null;
         await el.scrollIntoViewIfNeeded();
@@ -1018,178 +1048,406 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
         const box = await el.boundingBox();
         if (!box) return null;
 
-        // Overlay coordinate grid on top of the element
-        await page.evaluate(({ box }) => {
-          const overlay = document.createElement('div');
-          overlay.id = '__br_grid';
-          overlay.style.cssText = `position:fixed; top:${box.y}px; left:${box.x}px; width:${box.width}px; height:${box.height}px; pointer-events:none; z-index:99999; overflow:visible;`;
-
-          const step = Math.max(10, Math.round(box.width / 15));
-          for (let x = 0; x <= box.width; x += step) {
-            const line = document.createElement('div');
-            line.style.cssText = `position:absolute; left:${x}px; top:0; width:0; height:100%; border-left:2px solid rgba(255,0,0,0.6);`;
-            overlay.appendChild(line);
-
-            const label = document.createElement('span');
-            label.textContent = x + 'px';
-            label.style.cssText = `position:absolute; left:${x-15}px; top:0; font-size:10px; color:#ff0000; font-weight:bold; font-family:monospace; background:rgba(255,255,255,0.9); padding:0 2px; line-height:14px; white-space:nowrap;`;
-            overlay.appendChild(label);
-          }
-
-          document.body.appendChild(overlay);
-        }, { box });
-
-        await new Promise(r => setTimeout(r, 150));
+        if (withGrid) {
+          await page.evaluate(({ box }) => {
+            const overlay = document.createElement('div');
+            overlay.id = '__br_grid';
+            overlay.style.cssText = `position:fixed; top:${box.y}px; left:${box.x}px; width:${box.width}px; height:${box.height}px; pointer-events:none; z-index:99999; overflow:visible;`;
+            for (let x = 0; x <= box.width; x += 5) {
+              const isMajor = x % 20 === 0;
+              const isMid = x % 10 === 0;
+              const line = document.createElement('div');
+              const opacity = isMajor ? 0.7 : (isMid ? 0.35 : 0.15);
+              const width = isMajor ? 2 : 1;
+              line.style.cssText = `position:absolute; left:${x}px; top:0; width:0; height:100%; border-left:${width}px solid rgba(255,0,0,${opacity});`;
+              overlay.appendChild(line);
+              if (isMajor) {
+                const label = document.createElement('span');
+                label.textContent = x + 'px';
+                label.style.cssText = `position:absolute; left:${x-14}px; top:-16px; font-size:9px; color:#fff; font-weight:bold; font-family:monospace; background:rgba(200,0,0,0.85); padding:0 3px; line-height:14px; white-space:nowrap; border-radius:2px;`;
+                overlay.appendChild(label);
+              }
+            }
+            document.body.appendChild(overlay);
+          }, { box });
+          await new Promise(r => setTimeout(r, 150));
+        }
 
         const vp = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
         const clip = {
-          x: Math.max(0, box.x),
-          y: Math.max(0, box.y),
+          x: Math.max(0, box.x), y: Math.max(0, box.y),
           width: Math.min(box.width, vp.w - Math.max(0, box.x)),
           height: Math.min(box.height, vp.h - Math.max(0, box.y))
         };
-
         let buffer = null;
         if (clip.width > 0 && clip.height > 0) {
           buffer = await page.screenshot({ clip, type: 'png' });
         }
 
-        // Remove grid overlay
-        await page.evaluate(() => {
-          const g = document.getElementById('__br_grid');
-          if (g) g.remove();
-        });
+        if (withGrid) {
+          await page.evaluate(() => {
+            const g = document.getElementById('__br_grid');
+            if (g) g.remove();
+          });
+        }
 
         return buffer ? buffer.toString('base64') : null;
       };
 
-      // Background: always screenshot with coordinate grid
-      const bgBase64 = await screenshotBgWithGrid(bgSel);
-
-      // Tile: extract clean data URL from img src (or fallback screenshot)
-      const tileBase64 = await (async () => {
-        const el = await resolveEl(tileSel);
-        if (!el) return null;
-        const cleanSrc = await page.evaluate(el => {
-          if (el.tagName === 'IMG') {
-            const s = el.src || '';
-            if (s.startsWith('data:image/')) return s.split(',')[1];
+      // Helper: fetch image as base64 from any src (even cross-origin via fetch)
+      const fetchImgAsBase64 = async (el) => {
+        return await page.evaluate(async (el) => {
+          const getSrc = (e) => {
+            if (e.tagName === 'IMG') return e.src;
+            const img = e.querySelector('img');
+            if (img) return img.src;
+            if (e.tagName === 'CANVAS') return e.toDataURL('image/png');
+            return null;
+          };
+          const src = getSrc(el);
+          if (!src) return null;
+          if (src.startsWith('data:image/')) return src.split(',')[1];
+          try {
+            const resp = await fetch(src, { credentials: 'omit' });
+            const blob = await resp.blob();
+            return await new Promise((resolve) => {
+              const r = new FileReader();
+              r.onload = () => resolve(r.result.split(',')[1]);
+              r.readAsDataURL(blob);
+            });
+          } catch {
+            // Fallback: try canvas draw with anonymous cors
+            try {
+              const c = document.createElement('canvas');
+              const img = new Image();
+              img.crossOrigin = 'anonymous';
+              await new Promise((resolve, reject) => {
+                img.onload = resolve;
+                img.onerror = reject;
+                img.src = src;
+              });
+              c.width = img.naturalWidth;
+              c.height = img.naturalHeight;
+              c.getContext('2d').drawImage(img, 0, 0);
+              return c.toDataURL('image/png').split(',')[1];
+            } catch { return null; }
           }
-          if (el.tagName === 'CANVAS') return el.toDataURL('image/png').split(',')[1];
-          const childImg = el.querySelector('img');
-          if (childImg) {
-            const s = childImg.src || '';
-            if (s.startsWith('data:image/')) return s.split(',')[1];
-          }
-          return null;
         }, el);
-        if (cleanSrc) return cleanSrc;
-        // fallback screenshot
-        const box = await el.boundingBox();
-        if (!box) return null;
-        const vp = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
-        const clip = {
-          x: Math.max(0, box.x),
-          y: Math.max(0, box.y),
-          width: Math.min(box.width, vp.w - Math.max(0, box.x)),
-          height: Math.min(box.height, vp.h - Math.max(0, box.y))
-        };
-        if (clip.width <= 0 || clip.height <= 0) return null;
-        const buffer = await page.screenshot({ clip, type: 'png' });
-        return buffer.toString('base64');
-      })();
+      };
 
-      if (!bgBase64 || !tileBase64) {
-        return res.status(400).send('Could not find captcha elements. Use view-tree to locate them and pass selectors explicitly.');
+      // Helper: find notch X by pixel-matching tile against background
+      // Runs entirely in page context, uses data: URLs (no CORS issues)
+      const findNotchByPixelMatch = async (scope, bgSel, tileSel) => {
+        try {
+          const result = await page.evaluate(({ scope, bgSel, tileSel }) => {
+            const sc = scope ? scope + ' ' : '';
+            const w = scope ? document.querySelector(scope) : document;
+
+            // Find bg img
+            const bgImg = w.querySelector(sc + bgSel);
+            if (!bgImg || bgImg.tagName !== 'IMG') return null;
+            // Find tile img (inside .gc-tile)
+            const tileDiv = w.querySelector(sc + '.gc-tile');
+            if (!tileDiv) return null;
+            const tileImg = tileDiv.querySelector('img');
+            if (!tileImg) return null;
+            if (!tileImg || tileImg.tagName !== 'IMG') return null;
+
+            // Render bg to canvas
+            const bgC = document.createElement('canvas');
+            bgC.width = bgImg.naturalWidth;
+            bgC.height = bgImg.naturalHeight;
+            const bgCtx = bgC.getContext('2d');
+            bgCtx.drawImage(bgImg, 0, 0);
+            let bgData;
+            try { bgData = bgCtx.getImageData(0, 0, bgC.width, bgC.height).data; }
+            catch { return null; }
+
+            // Render tile to canvas
+            const tC = document.createElement('canvas');
+            tC.width = tileImg.naturalWidth;
+            tC.height = tileImg.naturalHeight;
+            const tCtx = tC.getContext('2d');
+            tCtx.drawImage(tileImg, 0, 0);
+            let tileData;
+            try { tileData = tCtx.getImageData(0, 0, tC.width, tC.height).data; }
+            catch { return null; }
+
+            const bw = bgC.width, bh = bgC.height;
+            const tw = tC.width, th = tC.height;
+
+            // Find non-transparent bounds of the tile
+            let minTx = tw, maxTx = 0, minTy = th, maxTy = 0;
+            for (let y = 0; y < th; y++) {
+              for (let x = 0; x < tw; x++) {
+                if (tileData[(y * tw + x) * 4 + 3] > 50) {
+                  minTx = Math.min(minTx, x); maxTx = Math.max(maxTx, x);
+                  minTy = Math.min(minTy, y); maxTy = Math.max(maxTy, y);
+                }
+              }
+            }
+            const pw = maxTx - minTx + 1, ph = maxTy - minTy + 1;
+            if (pw < 10 || ph < 10) return null;
+
+            const maxSearch = Math.max(0, bw - pw);
+            if (maxSearch < 1) return null;
+
+            // Find position where tile differs MOST from bg (notch is a cutout in bg)
+            // The notch in the bg is where the puzzle piece was cut from:
+            // the tile pixels will differ significantly from the bg pixels there.
+            // We want max-diff (notch is missing from bg, so tile != bg at that position)
+            let bestX = 0;
+            let bestScore = -Infinity;
+            for (let sx = 0; sx <= maxSearch; sx += 2) {
+              let score = 0, cnt = 0;
+              for (let py = minTy; py <= maxTy; py++) {
+                for (let px = minTx; px <= maxTx; px++) {
+                  const ti = (py * tw + px) * 4;
+                  if (tileData[ti + 3] < 50) continue;
+                  const bx = sx + (px - minTx);
+                  if (bx >= bw) continue;
+                  const bi = (py * bw + bx) * 4;
+                  const dr = tileData[ti] - bgData[bi];
+                  const dg = tileData[ti + 1] - bgData[bi + 1];
+                  const db = tileData[ti + 2] - bgData[bi + 2];
+                  score += dr * dr + dg * dg + db * db;
+                  cnt++;
+                }
+              }
+              if (cnt > 0) {
+                const avg = score / cnt;
+                if (avg > bestScore) { bestScore = avg; bestX = sx; }
+              }
+            }
+
+            return { x: bestX, score: Math.round(bestScore), bw, bh, tw, th, pw, ph };
+          }, { scope, bgSel, tileSel });
+
+          if (!result || !result.x) return null;
+          // Convert from natural image coords to CSS pixel coords
+          const bgEl = await resolveEl(bgSel);
+          const box = await bgEl.boundingBox();
+          if (!box) return result.x; // fallback to natural coords
+          const cssScale = box.width / result.bw;
+          const cssX = Math.round(result.x * cssScale);
+          record('pixel-match', { naturalX: result.x, cssX, score: result.score, bw: result.bw, tw: result.tw });
+          return cssX;
+        } catch (e) {
+          record('pixel-match-error', e.message);
+          return null;
+        }
+      };
+
+      // Helper: ask LLM for notch position
+      const findNotchByLLM = async (bgB64, tileB64) => {
+        const prompt = `First image: slide captcha BACKGROUND with a RED coordinate grid overlaid. Every 20px has a thick red line labeled with the pixel position (e.g. "20px", "40px"). Thinner lines every 5px.
+
+The background has a notch (a cut-out hole) where a puzzle piece fits. Find the EXACT pixel X position of the CENTER of this notch by reading the grid labels.
+
+Second image: the puzzle PIECE that will be placed into the notch.
+
+Return ONLY: <answer>X</answer> where X is the exact pixel position (0-320). Be precise — look at the grid lines and estimate between them if needed.`;
+
+        const llmResponse = await llm.chat({
+          system: 'You are a precise captcha solver. Read the coordinate grid to find the notch center position. Return <answer>X</answer> with the exact pixel X coordinate.',
+          messages: [prompt],
+          images: [bgB64, tileB64]
+        });
+
+        const match = llmResponse.match(/<answer>\s*(\d{1,4})\s*<\/answer>/);
+        if (!match) return null;
+        return parseInt(match[1], 10);
+      };
+
+      // Retry loop
+      let attempt = 0;
+      let lastError = null;
+      let attempts = [];
+
+      while (attempt <= maxRetries) {
+        attempt++;
+        const scopedBgSel = scope ? scope + ' ' + bgSel : bgSel;
+        const scopedTileSel = scope ? scope + ' ' + tileSel : tileSel;
+
+        // METHOD 1: Pixel matching (tile vs bg in page context, natural resolution)
+        let targetX = await findNotchByPixelMatch(scope, bgSel, tileSel);
+        let notchMethod = 'pixel-match';
+        let bgBase64 = null;
+        let tileBase64 = null;
+
+        // METHOD 2: Fall back to LLM vision (needs screenshots with grid overlay)
+        if (targetX == null) {
+          // Hide overlapping tile for clean bg screenshot
+          await page.evaluate(() => {
+            const tile = document.querySelector('.gc-tile');
+            if (tile) tile.style.setProperty('display', 'none', 'important');
+          });
+          await new Promise(r => setTimeout(r, 100));
+          bgBase64 = await screenshotBg(scopedBgSel, true);
+          // Restore tile
+          await page.evaluate(() => {
+            const tile = document.querySelector('.gc-tile');
+            if (tile) tile.style.removeProperty('display');
+          });
+          await new Promise(r => setTimeout(r, 100));
+          // Screenshot tile for LLM
+          const tileEl = await resolveEl(scopedTileSel);
+          if (tileEl) {
+            const box = await tileEl.boundingBox();
+            if (box) {
+              const vp = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+              const clip = {
+                x: Math.max(0, box.x), y: Math.max(0, box.y),
+                width: Math.min(box.width, vp.w - Math.max(0, box.x)),
+                height: Math.min(box.height, vp.h - Math.max(0, box.y))
+              };
+              if (clip.width > 0 && clip.height > 0) {
+                const buf = await page.screenshot({ clip, type: 'png' });
+                tileBase64 = buf.toString('base64');
+              }
+            }
+          }
+          if (bgBase64 && tileBase64) {
+            targetX = await findNotchByLLM(bgBase64, tileBase64);
+            if (targetX != null) notchMethod = 'llm';
+          }
+        }
+
+        if (targetX == null) {
+          lastError = 'Could not determine notch position';
+          break;
+        }
+
+        // Get element positions just before drag
+        await scrollToCaptcha();
+        await new Promise(r => setTimeout(r, 300));
+
+        const coords = await page.evaluate(({ scope, trkSel, bgSel }) => {
+          const sc = scope ? scope + ' ' : '';
+          const bar = document.querySelector(sc + trkSel);
+          if (!bar) return null;
+          const barRect = bar.getBoundingClientRect();
+          const wrapper = scope ? document.querySelector(scope) : document;
+          // Must find block ONLY within the track to avoid matching .gc-icon-block etc.
+          const track = wrapper ? wrapper.querySelector('.gc-drag-slide-bar, [class*="slider"], [class*="track"]') : null;
+          const block = track ? track.querySelector('.gc-drag-block, [class*="block"], [class*="handle"], [class*="thumb"], button') : null;
+          const blockRect = block ? block.getBoundingClientRect() : null;
+          const bg = document.querySelector(sc + bgSel);
+          const bgRect = bg ? bg.getBoundingClientRect() : null;
+          const tile = wrapper ? wrapper.querySelector('.gc-tile') : null;
+          const tileRect = tile ? tile.getBoundingClientRect() : null;
+          return {
+            bar: { x: barRect.x, y: barRect.y, w: barRect.width, h: barRect.height },
+            block: blockRect ? { x: blockRect.x, y: blockRect.y, w: blockRect.width, h: blockRect.height } : null,
+            bg: bgRect ? { x: bgRect.x, y: bgRect.y, w: bgRect.width, h: bgRect.height } : null,
+            tile: tileRect ? { x: tileRect.x, y: tileRect.y, w: tileRect.width, h: tileRect.height } : null
+          };
+        }, { scope, trkSel, bgSel });
+
+        if (!coords || !coords.bar) {
+          lastError = 'Slider track not found';
+          break;
+        }
+
+        const windowPos = await getChromiumWindowPos();
+        if (!windowPos) {
+          lastError = 'Browser window not found';
+          break;
+        }
+
+        const toScreenX = (pageX) => Math.round(windowPos.x + pageX + calibrationOffset.x);
+        const toScreenY = (pageY) => Math.round(windowPos.y + pageY + calibrationOffset.y);
+
+        let fromX, fromY, toX, toY;
+        if (coords.block) {
+          fromX = toScreenX(coords.block.x + coords.block.w / 2);
+          fromY = toScreenY(coords.block.y + coords.block.h / 2);
+        } else {
+          fromX = toScreenX(coords.bar.x + 20);
+          fromY = toScreenY(coords.bar.y + coords.bar.h / 2);
+        }
+
+        // The tile is what actually needs to align with the notch.
+        // Calculate how much the tile must move, then apply that delta to the block.
+        if (coords.tile && coords.bg) {
+          const tileCenterX = coords.tile.x + coords.tile.w / 2;
+          const notchX = coords.bg.x + targetX;
+          const tileDelta = notchX - tileCenterX;
+          toX = toScreenX(coords.block.x + coords.block.w / 2 + tileDelta);
+        } else if (coords.bg) {
+          toX = toScreenX(coords.bg.x + targetX);
+        } else {
+          toX = toScreenX(coords.bar.x + targetX);
+        }
+        toY = fromY;
+
+        // Perform the drag
+        await focusChromiumWindow();
+        await new Promise(r => setTimeout(r, 50));
+        await execAsync(`ydotool mousemove --absolute -x ${Math.round(fromX / 2)} -y ${Math.round(fromY / 2)}`);
+        await new Promise(r => setTimeout(r, 60));
+        await execAsync(`ydotool click 0x40`);
+        await new Promise(r => setTimeout(r, 100));
+        const dragDist = Math.hypot(toX - fromX, toY - fromY);
+        const dragSteps = Math.min(Math.max(Math.round(dragDist / 20), 3), 30);
+        for (let s = 1; s <= dragSteps; s++) {
+          const t = s / dragSteps;
+          const px = Math.round(fromX + (toX - fromX) * t);
+          const py = Math.round(fromY + (toY - fromY) * t);
+          await execAsync(`ydotool mousemove --absolute -x ${Math.round(px / 2)} -y ${Math.round(py / 2)}`);
+          await sleep(rand(3, 8));
+        }
+        await new Promise(r => setTimeout(r, 80));
+        await execAsync(`ydotool click 0x80`);
+
+        record('solve-slide-captcha', { attempt, targetX, fromX, fromY, toX, toY });
+
+        // Verify
+        await new Promise(r => setTimeout(r, 1500));
+        const verified = await page.evaluate(({ scope }) => {
+          const w = document.querySelector(scope);
+          if (!w) return { solved: false, details: { error: 'wrapper not found' } };
+          const header = w.querySelector('.gc-header');
+          const headerText = header ? header.textContent.trim().toLowerCase() : '';
+          const successTexts = ['verified', 'passed', 'success', 'check', '✓', '✔', 'complete', 'done'];
+          const failureTexts = ['failed', 'try again', 'error', 'incorrect', '✗', '✘'];
+          const hasSuccessText = successTexts.some(t => headerText.includes(t));
+          const hasFailureText = failureTexts.some(t => headerText.includes(t));
+          const defaultPrompt = 'drag the slider';
+          const promptChanged = !headerText.includes(defaultPrompt);
+          const dragBlock = w.querySelector('.gc-drag-block');
+          const blockLeft = dragBlock ? dragBlock.getBoundingClientRect().x : 0;
+          const bar = w.querySelector('.gc-drag-slide-bar');
+          const barLeft = bar ? bar.getBoundingClientRect().x : 0;
+          const snappedBack = (bar && dragBlock) ? (blockLeft - barLeft < 10) : false;
+          return {
+            solved: hasSuccessText || (promptChanged && !hasFailureText),
+            details: { headerText, promptChanged, hasSuccessText, hasFailureText, snappedBack }
+          };
+        }, { scope });
+
+        attempts.push({ targetX, fromX, fromY, toX, toY, verified: verified.solved, details: { ...verified.details, method: notchMethod } });
+
+        if (verified.solved) {
+          return res.json({
+            success: true,
+            verified: true,
+            attempts,
+            drag: { from: { x: Math.round(fromX), y: Math.round(fromY) }, to: { x: Math.round(toX), y: Math.round(toY) } }
+          });
+        }
+
+        if (attempt <= maxRetries) {
+          await refreshCaptcha(scope);
+        }
       }
 
-      // Ask LLM for the offset
-      const prompt = `This is a slide captcha background image with a coordinate grid overlaid. Red vertical lines mark pixel positions from the left edge, with numbers labeled at the top.
-
-The background image has a notch (cut-out area) where a puzzle piece needs to be placed. Look at the grid labels to find the X coordinate of the CENTER of the notch.
-
-Return ONLY the number: <answer>X</answer> where X is the pixel position.`;
-
-      const llmResponse = await llm.chat({
-        system: 'You are a captcha solver. Look at the grid on the background image and report the X coordinate of the notch center in <answer>X</answer> format.',
-        messages: [prompt],
-        images: [bgBase64, tileBase64]
-      });
-
-      const match = llmResponse.match(/<answer>\s*(\d{1,4})\s*<\/answer>/);
-      if (!match) {
-        return res.status(400).send('Could not determine offset from LLM: ' + llmResponse);
-      }
-      const targetX = parseInt(match[1], 10);
-
-      // Get all element positions in one shot just before drag
-      await scrollToCaptcha();
-      await new Promise(r => setTimeout(r, 300));
-
-      const coords = await page.evaluate(({ trkSel, blockSel, bgSel }) => {
-        const bar = document.querySelector(trkSel);
-        if (!bar) return null;
-        const barRect = bar.getBoundingClientRect();
-
-        const block = document.querySelector(blockSel);
-        const blockRect = block ? block.getBoundingClientRect() : null;
-
-        const bg = document.querySelector(bgSel);
-        const bgRect = bg ? bg.getBoundingClientRect() : null;
-
-        return {
-          bar: { x: barRect.x, y: barRect.y, w: barRect.width, h: barRect.height },
-          block: blockRect ? { x: blockRect.x, y: blockRect.y, w: blockRect.width, h: blockRect.height } : null,
-          bg: bgRect ? { x: bgRect.x, y: bgRect.y, w: bgRect.width, h: bgRect.height } : null
-        };
-      }, { trkSel, blockSel: `${trkSel} .gc-drag-block, ${trkSel} [class*="block"], ${trkSel} [class*="handle"], ${trkSel} [class*="thumb"], ${trkSel} button`, bgSel });
-
-      if (!coords || !coords.bar) return res.status(400).send('Slider track not found');
-
-      // Convert page coords to screen coords using window position
-      const windowPos = await getChromiumWindowPos();
-      if (!windowPos) return res.status(400).send('Browser window not found');
-
-      const toScreenX = (pageX) => Math.round(windowPos.x + pageX + calibrationOffset.x);
-      const toScreenY = (pageY) => Math.round(windowPos.y + pageY + calibrationOffset.y);
-
-      let fromX, fromY, toX, toY;
-
-      if (coords.block) {
-        fromX = toScreenX(coords.block.x + coords.block.w / 2);
-        fromY = toScreenY(coords.block.y + coords.block.h / 2);
-      } else {
-        fromX = toScreenX(coords.bar.x + 20);
-        fromY = toScreenY(coords.bar.y + coords.bar.h / 2);
-      }
-
-      if (coords.bg) {
-        toX = toScreenX(coords.bg.x + targetX);
-      } else {
-        toX = toScreenX(coords.bar.x + targetX);
-      }
-      toY = fromY;
-
-      // Perform the drag
-      await focusChromiumWindow();
-      await new Promise(r => setTimeout(r, 50));
-      await naturalMouseMove(fromX, fromY);
-      await new Promise(r => setTimeout(r, 80));
-      await execAsync(`ydotool click 0x40`);
-      await new Promise(r => setTimeout(r, 120));
-      await naturalMouseMove(toX, toY);
-      await new Promise(r => setTimeout(r, 80));
-      await execAsync(`ydotool click 0x80`);
-
-      record('solve-slide-captcha', { targetX, fromX, fromY, toX, toY });
-
+      // All attempts failed
       res.json({
         success: true,
-        llmAnalysis: llmResponse,
-        targetX,
-        bgWidth: coords.bg ? coords.bg.w : null,
-        dragFrom: { x: Math.round(fromX), y: Math.round(fromY) },
-        dragTo: { x: Math.round(toX), y: Math.round(toY) }
+        verified: false,
+        error: lastError,
+        attempts
       });
     } catch (err) {
       res.status(500).send(err.message);
