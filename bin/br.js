@@ -339,10 +339,26 @@ program
 program
   .command('view-tree')
   .description("Display a hierarchical tree of the page's accessibility and DOM nodes.")
-  .action(async () => {
+  .option('-r, --role <roles>', 'Filter by ARIA roles (comma-separated, e.g. "button,link,heading")')
+  .option('-t, --tag <tags>', 'Filter by HTML tags (comma-separated, e.g. "a,button,input")')
+  .option('-m, --match <text>', 'Filter by name text (case-insensitive substring match)')
+  .option('-d, --max-depth <depth>', 'Maximum tree depth to display')
+  .option('-o, --only-matches', 'Show only matching nodes (hide ancestor context)')
+  .action(async (opts) => {
     try {
-      const tree = await send('/tree');
-      console.log(tree);
+      const body = {};
+      if (opts.role) body.role = opts.role;
+      if (opts.tag) body.tag = opts.tag;
+      if (opts.match) body.match = opts.match;
+      if (opts.maxDepth) body.maxDepth = parseInt(opts.maxDepth);
+      if (opts.onlyMatches) body.onlyMatches = true;
+      const tree = await send('/view-tree', 'POST', body);
+      try {
+        const parsed = JSON.parse(tree);
+        console.log(parsed.tree || tree);
+      } catch {
+        console.log(tree);
+      }
     } catch (error) {
       console.error('Error viewing tree:', error);
     }
@@ -372,6 +388,76 @@ program
       console.log('Switched to tab', index);
     } catch (error) {
       console.error('Error switching tab:', error);
+    }
+  });
+
+program
+  .command('eval')
+  .description('Evaluate JavaScript code in the browser page.')
+  .argument('<code>', 'JavaScript code to evaluate.')
+  .action(async (code) => {
+    try {
+      const parsed = JSON.parse(await send('/evaluate', 'POST', { code }));
+      const result = parsed.result;
+      if (result === undefined) {
+        console.log('undefined');
+      } else {
+        console.log(typeof result === 'string' ? result : JSON.stringify(result, null, 2));
+      }
+    } catch (error) {
+      console.error('Error evaluating code:', error);
+    }
+  });
+
+program
+  .command('yclick')
+  .description('Click an element using ydotool with natural mouse movement (undetectable).')
+  .argument('<selectorOrId>', 'Node ID from view-tree (e.g. "22"), or CSS/XPath selector.')
+  .action(async (selector) => {
+    try {
+      await send('/yclick', 'POST', { selector });
+      console.log('yclicked', selector);
+    } catch (error) {
+      console.error('Error yclicking element:', error);
+    }
+  });
+
+program
+  .command('fullscreen')
+  .description('Enter browser fullscreen mode via requestFullscreen() API.')
+  .action(async () => {
+    try {
+      await send('/fullscreen', 'POST');
+      console.log('Entered fullscreen mode.');
+    } catch (error) {
+      console.error('Error entering fullscreen:', error);
+    }
+  });
+
+program
+  .command('ydrag')
+  .description('Drag from one element to another using ydotool (mousedown → move → mouseup).')
+  .argument('<fromSelector>', 'Node ID or selector for the source (draggable) element.')
+  .argument('<toSelector>', 'Node ID or selector for the target (drop zone) element.')
+  .action(async (from, to) => {
+    try {
+      await send('/ydrag', 'POST', { from, to });
+      console.log('dragged from', from, 'to', to);
+    } catch (error) {
+      console.error('Error dragging:', error);
+    }
+  });
+
+program
+  .command('calibrate')
+  .description('Calibrate the ydotool click offset.')
+  .action(async () => {
+    try {
+      const result = await send('/calibrate');
+      const parsed = JSON.parse(result);
+      console.log(JSON.stringify(parsed, null, 2));
+    } catch (error) {
+      console.error('Error calibrating:', error);
     }
   });
 
