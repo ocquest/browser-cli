@@ -267,6 +267,13 @@ br tabs
 
 ```bash
 br switch-tab 1
+br go-tab 1     # alias for switch-tab
+```
+
+### Close a tab by index
+
+```bash
+br close-tab 1
 ```
 
 ### Stop the daemon

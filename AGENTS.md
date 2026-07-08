@@ -41,7 +41,7 @@ br start                                  # launches headful Chromium + Express 
 | `br view-html [--page N]` | paginated HTML (5KB chunks) |
 | `br screenshot [--base64]` | saves PNG to tmp, or `--base64` for base64 output |
 | `br screenshot-element <selector> [--margin N] [--base64]` | element screenshot with margin (default 10px) |
-| `br tabs` / `br switch-tab <index>` | tab management |
+| `br tabs` / `br switch-tab <index>` / `br go-tab <index>` / `br close-tab <index>` | tab management |
 | `br fullscreen` | `requestFullscreen()` API, falls back to F11 |
 | `br scrollIntoView <selector>` / `br scrollTo <pct>` / `br nextChunk` / `br prevChunk` | scrolling |
 | `br history` / `br clear-history` | action history |

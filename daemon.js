@@ -278,6 +278,26 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     res.send('ok');
   });
 
+  app.post('/tabs/close', async (req, res) => {
+    try {
+      const { index } = req.body;
+      if (index === undefined || index < 0 || index >= pages.length) {
+        return res.status(400).send('invalid tab index');
+      }
+      const page = pages[index];
+      const wasActive = page === activePage;
+      await page.close();
+      pages.splice(index, 1);
+      if (wasActive) {
+        activePage = pages.length > 0 ? pages[Math.min(index, pages.length - 1)] : null;
+      }
+      record('close-tab', { index });
+      res.send('ok');
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
   app.post('/goto', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).send('missing url');
