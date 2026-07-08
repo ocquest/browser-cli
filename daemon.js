@@ -9,6 +9,9 @@ const execAsync = util.promisify(require('child_process').exec);
 const os = require('os');
 const path = require('path');
 const llm = require('./lib/llm');
+const state = require('./src/daemon/services/state');
+const hyprctl = require('./src/daemon/services/hyprctl');
+const ydotool = require('./src/daemon/services/ydotool');
 
 function getProxyConfig() {
   const proxyUrl = process.env.BR_PROXY || '';
@@ -25,15 +28,7 @@ function getProxyConfig() {
   }
 }
 
-let lastIdToXPath = {}; // Global variable to store the last idToXPath mapping
-const secrets = new Set();
-const history = [];
-let calibrationOffset = { x: 0, y: 0 };
-
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  function record(action, args = {}) {
-  history.push({ action, args, timestamp: new Date().toISOString() });
-}
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
 
@@ -104,55 +99,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     }
   });
 
-  async function getChromiumWindowPos() {
-    try {
-      const { stdout } = await execAsync('hyprctl clients -j');
-      const clients = JSON.parse(stdout);
-      const win = clients.find(c => c.class.toLowerCase() === 'chromium-browser');
-      if (!win) return null;
-      return { x: win.at[0], y: win.at[1], width: win.size[0], height: win.size[1] };
-    } catch (err) {
-      return null;
-    }
-  }
 
-  async function focusChromiumWindow() {
-    try {
-      await execAsync('hyprctl dispatch focuswindow class:Chromium-browser');
-    } catch (_) {}
-  }
-
-  async function getCursorPos() {
-    const { stdout } = await execAsync('hyprctl cursorpos');
-    const parts = stdout.trim().split(',').map(Number);
-    return { x: parts[0], y: parts[1] };
-  }
-
-  function lerp(a, b, t) { return a + (b - a) * t; }
-  function rand(a, b) { return a + Math.random() * (b - a); }
-
-  async function naturalMouseMove(targetX, targetY) {
-    const start = await getCursorPos();
-    const dx = targetX - start.x;
-    const dy = targetY - start.y;
-    const dist = Math.sqrt(dy*dy + dx*dx);
-    if (dist < 8) return;
-
-    const steps = Math.max(6, Math.min(30, Math.round(dist / 30)));
-
-    for (let i = 1; i <= steps; i++) {
-      let t = i / steps;
-      t = t * t * (3 - 2 * t);
-      const px = lerp(start.x, targetX, t) + rand(-1.2, 1.2);
-      const py = lerp(start.y, targetY, t) + rand(-1.2, 1.2);
-      const ydoX = Math.round(px / 2);
-      const ydoY = Math.round(py / 2);
-      await execAsync(`ydotool mousemove --absolute -x ${ydoX} -y ${ydoY}`);
-      const phase = Math.abs(t - 0.5) * 2;
-      const delay = Math.round(rand(3, 8) + phase * rand(3, 10));
-      await new Promise(r => setTimeout(r, delay));
-    }
-  }
 
   const app = express();
   app.use(express.json());
@@ -172,7 +119,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
         fs.writeFileSync(filePath, buffer);
         res.send(filePath);
       }
-      record('screenshot', { base64: req.query.base64 === 'true' });
+      state.record('screenshot', { base64: req.query.base64 === 'true' });
     } catch (err) {
       res.status(500).send(err.message);
     }
@@ -203,7 +150,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
         fs.writeFileSync(filePath, buffer);
         res.send(filePath);
       }
-      record('screenshot-element', { selector, margin, base64: !!base64 });
+      state.record('screenshot-element', { selector, margin, base64: !!base64 });
     } catch (err) {
       res.status(500).send(err.message);
     }
@@ -276,7 +223,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
       return res.status(400).send('invalid tab index');
     }
     activePage = pages[index];
-    record('switch-tab', { index });
+    state.record('switch-tab', { index });
     res.send('ok');
   });
 
@@ -293,7 +240,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
       if (wasActive) {
         activePage = pages.length > 0 ? pages[Math.min(index, pages.length - 1)] : null;
       }
-      record('close-tab', { index });
+      state.record('close-tab', { index });
       res.send('ok');
     } catch (err) {
       res.status(500).send(err.message);
@@ -305,7 +252,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     if (!url) return res.status(400).send('missing url');
     try {
       await getActivePage().goto(url);
-      record('goto', { url });
+      state.record('goto', { url });
       res.send('ok');
     } catch (err) {
       res.status(500).send(err.message);
@@ -325,12 +272,12 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     try {
       await ensureClickable(req.body.selector);
       const pos = await getElementScreenPos(req.body.selector);
-      await focusChromiumWindow();
+      await hyprctl.focusChromiumWindow();
       await new Promise(r => setTimeout(r, 50));
-      await naturalMouseMove(pos.screenX, pos.screenY);
+      await ydotool.naturalMouseMove(pos.screenX, pos.screenY, hyprctl.getCursorPos);
       await new Promise(r => setTimeout(r, 60 + Math.round(Math.random() * 30)));
       await execAsync(`ydotool click C0`);
-      record('yclick', { selector: req.body.selector, ...pos });
+      state.record('yclick', { selector: req.body.selector, ...pos });
       res.send('ok');
     } catch (err) {
       res.status(500).send(err.message);
@@ -353,7 +300,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     if (!selector || text === undefined) return res.status(400).send('missing selector or text');
     try {
       await getActivePage().fill(selector, text);
-      record('fill', { selector });
+      state.record('fill', { selector });
       res.send('ok');
     } catch (err) {
       res.status(500).send(err.message);
@@ -365,8 +312,8 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     if (!selector || !secret) return res.status(400).send('missing selector or secret');
     try {
       await getActivePage().fill(selector, secret);
-      secrets.add(secret);
-      record('fill-secret', { selector });
+      state.addSecret(secret);
+      state.record('fill-secret', { selector });
       res.send('ok');
     } catch (err) {
       res.status(500).send(err.message);
@@ -378,7 +325,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     if (!selector || text === undefined) return res.status(400).send('missing selector or text');
     try {
       await getActivePage().type(selector, text);
-      record('type', { selector });
+      state.record('type', { selector });
       res.send('ok');
     } catch (err) {
       res.status(500).send(err.message);
@@ -390,7 +337,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     if (!key) return res.status(400).send('missing key');
     try {
       await getActivePage().keyboard.press(key);
-      record('press', { key });
+      state.record('press', { key });
       res.send('ok');
     } catch (err) {
       res.status(500).send(err.message);
@@ -469,7 +416,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
         return { tree: root, idToXPath };
       }, { role: roleFilter, tag, match, maxDepth, onlyMatches });
 
-      lastIdToXPath = tree.idToXPath;
+      state.setIdToXPath(tree.idToXPath);
       const result = tree.tree;
 
       function formatTree(node, prefix = '') {
@@ -491,7 +438,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
   app.post('/xpath-for-id', (req, res) => {
     const { id } = req.body;
     if (id === undefined) return res.status(400).send('missing id');
-    const xpath = lastIdToXPath[id];
+    const xpath = state.getXPathForId(id);
     if (!xpath) return res.status(400).send('XPath not found for ID');
     res.json({ xpath });
   });
@@ -546,7 +493,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
       }
       const result = await page.evaluate(`document.documentElement.requestFullscreen().then(() => 'ok').catch(e => e.message)`);
       if (result !== 'ok') {
-        await focusChromiumWindow();
+        await hyprctl.focusChromiumWindow();
         await new Promise(r => setTimeout(r, 200));
         await page.keyboard.press('F11');
         await new Promise(r => setTimeout(r, 500));
@@ -710,7 +657,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
   app.get('/calibrate', async (req, res) => {
     try {
       const page = getActivePage();
-      const windowPos = await getChromiumWindowPos();
+      const windowPos = await hyprctl.getChromiumWindowPos();
       if (!windowPos) {
         return res.status(400).send('No chromium-browser window found via hyprctl');
       }
@@ -756,9 +703,9 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
         const targetX = Math.round(windowPos.x + estOffsetX + box.x + box.width / 2);
         const targetY = Math.round(windowPos.y + estOffsetY + box.y + box.height / 2);
 
-        await focusChromiumWindow();
+        await hyprctl.focusChromiumWindow();
         await new Promise(r => setTimeout(r, 50));
-        await naturalMouseMove(targetX, targetY);
+        await ydotool.naturalMouseMove(targetX, targetY, hyprctl.getCursorPos);
         await new Promise(r => setTimeout(r, 60 + Math.round(Math.random() * 30)));
         await execAsync(`ydotool click C0`);
         await page.waitForTimeout(200);
@@ -780,25 +727,21 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
 
       // Adjust offset based on error: each cell is 86px apart (80px + 6px gap)
       const cellPitch = 86;
-      calibrationOffset = {
+      const newCalibrationOffset = {
         x: estOffsetX + avgErrX * cellPitch,
         y: estOffsetY + avgErrY * cellPitch
       };
+      state.setCalibrationOffset(newCalibrationOffset);
 
-      record('calibrate', { windowPos, viewport, estimatedOffset: { x: estOffsetX, y: estOffsetY }, errors, avgErrX, avgErrY, calibrationOffset });
-      res.json({ windowPos, viewport, estimatedOffset: { x: estOffsetX, y: estOffsetY }, errors, avgErrX, avgErrY, calibrationOffset });
+      state.record('calibrate', { windowPos, viewport, estimatedOffset: { x: estOffsetX, y: estOffsetY }, errors, avgErrX, avgErrY, calibrationOffset: newCalibrationOffset });
+      res.json({ windowPos, viewport, estimatedOffset: { x: estOffsetX, y: estOffsetY }, errors, avgErrX, avgErrY, calibrationOffset: newCalibrationOffset });
     } catch (err) {
       res.status(500).send(err.message + " " + err.stack);
     }
   });
 
   async function resolveSelector(selector) {
-    if (!isNaN(selector) && !isNaN(parseFloat(selector))) {
-      const xpath = lastIdToXPath[selector];
-      if (!xpath) throw new Error('XPath not found for ID');
-      selector = xpath;
-    }
-    return selector;
+    return state.resolveSelector(selector);
   }
 
   async function ensureClickable(selector) {
@@ -935,11 +878,12 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     await new Promise(r => setTimeout(r, 100));
     const box = await element.boundingBox();
     if (!box) throw new Error('Element has no bounding box (not visible?)');
-    const windowPos = await getChromiumWindowPos();
+    const windowPos = await hyprctl.getChromiumWindowPos();
     if (!windowPos) throw new Error('No chromium-browser window found via hyprctl');
+    const offset = state.getCalibrationOffset();
     return {
-      screenX: Math.round(windowPos.x + box.x + box.width / 2 + calibrationOffset.x),
-      screenY: Math.round(windowPos.y + box.y + box.height / 2 + calibrationOffset.y),
+      screenX: Math.round(windowPos.x + box.x + box.width / 2 + offset.x),
+      screenY: Math.round(windowPos.y + box.y + box.height / 2 + offset.y),
       windowPos, box
     };
   }
@@ -950,16 +894,16 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     try {
       const fromPos = await getElementScreenPos(from);
       const toPos = await getElementScreenPos(to);
-      await focusChromiumWindow();
+      await hyprctl.focusChromiumWindow();
       await new Promise(r => setTimeout(r, 50));
-      await naturalMouseMove(fromPos.screenX, fromPos.screenY);
+      await ydotool.naturalMouseMove(fromPos.screenX, fromPos.screenY, hyprctl.getCursorPos);
       await new Promise(r => setTimeout(r, 80));
       await execAsync(`ydotool click 0x40`); // left button down
       await new Promise(r => setTimeout(r, 120));
-      await naturalMouseMove(toPos.screenX, toPos.screenY);
+      await ydotool.naturalMouseMove(toPos.screenX, toPos.screenY, hyprctl.getCursorPos);
       await new Promise(r => setTimeout(r, 80));
       await execAsync(`ydotool click 0x80`); // left button up
-      record('ydrag', { from, to });
+      state.record('ydrag', { from, to });
       res.send('ok');
     } catch (err) {
       res.status(500).send(err.message);
@@ -1233,10 +1177,10 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
           if (!box) return result.x; // fallback to natural coords
           const cssScale = box.width / result.bw;
           const cssX = Math.round(result.x * cssScale);
-          record('pixel-match', { naturalX: result.x, cssX, score: result.score, bw: result.bw, tw: result.tw });
+          state.record('pixel-match', { naturalX: result.x, cssX, score: result.score, bw: result.bw, tw: result.tw });
           return cssX;
         } catch (e) {
-          record('pixel-match-error', e.message);
+          state.record('pixel-match-error', e.message);
           return null;
         }
       };
@@ -1352,14 +1296,15 @@ Return ONLY: <answer>X</answer> where X is the exact pixel position (0-320). Be 
           break;
         }
 
-        const windowPos = await getChromiumWindowPos();
+        const windowPos = await hyprctl.getChromiumWindowPos();
         if (!windowPos) {
           lastError = 'Browser window not found';
           break;
         }
 
-        const toScreenX = (pageX) => Math.round(windowPos.x + pageX + calibrationOffset.x);
-        const toScreenY = (pageY) => Math.round(windowPos.y + pageY + calibrationOffset.y);
+        const calOffset = state.getCalibrationOffset();
+        const toScreenX = (pageX) => Math.round(windowPos.x + pageX + calOffset.x);
+        const toScreenY = (pageY) => Math.round(windowPos.y + pageY + calOffset.y);
 
         let fromX, fromY, toX, toY;
         if (coords.block) {
@@ -1385,7 +1330,7 @@ Return ONLY: <answer>X</answer> where X is the exact pixel position (0-320). Be 
         toY = fromY;
 
         // Perform the drag
-        await focusChromiumWindow();
+        await hyprctl.focusChromiumWindow();
         await new Promise(r => setTimeout(r, 50));
         await execAsync(`ydotool mousemove --absolute -x ${Math.round(fromX / 2)} -y ${Math.round(fromY / 2)}`);
         await new Promise(r => setTimeout(r, 60));
@@ -1398,12 +1343,12 @@ Return ONLY: <answer>X</answer> where X is the exact pixel position (0-320). Be 
           const px = Math.round(fromX + (toX - fromX) * t);
           const py = Math.round(fromY + (toY - fromY) * t);
           await execAsync(`ydotool mousemove --absolute -x ${Math.round(px / 2)} -y ${Math.round(py / 2)}`);
-          await sleep(rand(3, 8));
+          await sleep(ydotool.rand(3, 8));
         }
         await new Promise(r => setTimeout(r, 80));
         await execAsync(`ydotool click 0x80`);
 
-        record('solve-slide-captcha', { attempt, targetX, fromX, fromY, toX, toY });
+        state.record('solve-slide-captcha', { attempt, targetX, fromX, fromY, toX, toY });
 
         // Verify
         await new Promise(r => setTimeout(r, 1500));

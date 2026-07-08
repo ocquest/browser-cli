@@ -9,8 +9,10 @@ br start                                  # launches headful Chromium + Express 
 ```
 
 ## Architecture
-- **`bin/br.js`** — CLI (Commander.js), sends HTTP to daemon on `localhost:3030`.
-- **`daemon.js`** — Express server running a persistent Chromium via `playwright-extra` + stealth plugin. Uses `chromium.launchPersistentContext` (not `launch`). Top-level async IIFE.
+- **`bin/br.js`** — Thin entry point, delegates to `src/cli/index.js`.
+- **`src/cli/`** — CLI commands organized in modules under `commands/`. Uses `Commander.js`, sends HTTP to daemon on `localhost:3030`.
+- **`daemon.js`** — Express server running a persistent Chromium via `playwright-extra` + stealth plugin. Uses `chromium.launchPersistentContext`. Top-level async IIFE.
+- **`src/daemon/services/`** — Shared services: `state.js` (history, secrets, calibration, ID→XPath), `hyprctl.js` (Hyprland window management), `ydotool.js` (mouse simulation with natural movement).
 - **Sub-30 second start**: daemon writes PID to `daemon.pid`, CLI waits for `"br daemon running"` on stdout with a 5s timeout.
 
 ## Commands (all require running daemon)
@@ -59,7 +61,8 @@ br start                                  # launches headful Chromium + Express 
 - **`fill-secret`** expects an **env var name** (not the secret value directly). Values are masked in `view-html`.
 - **Proxy**: daemon reads `HTTP_PROXY`/`HTTPS_PROXY` env vars and passes proxy config to Chromium automatically (including auth).
 - **Anti-detection**: uses `--disable-automation`, `--disable-blink-features=AutomationControlled`, and `context.addInitScript` to hide automation from bot detection.
-- **No test/lint/typecheck/format scripts** in `package.json`. No ESLint, Prettier, TypeScript.
+- **Tests**: `npm test` runs all tests via Node's built-in test runner. Tests for `state.js`, `ydotool.js`, `hyprctl.js`, and CLI `send.js` are in `test/`. No external test dependencies.
+- **Lint**: `npm run lint` — syntax checks all source files (no ESLint/Prettier/TypeScript).
 - **CI**: pushes to `main` auto-bump patch version and publish to npm (`@browsemake/browser-cli`). Weekly GitHub Release. Don't manually bump `version` in `package.json`.
 - **CommonJS** (`"type": "commonjs"`). Node 18+.
 - **nodemon-style hot reload** is not configured; restart `br stop && br start` after edits.

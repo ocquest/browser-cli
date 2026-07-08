@@ -5,6 +5,15 @@
   "bin": {
     "br": "./bin/br.js"
   },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.js'",
+    "test:send": "node --test test/cli/send.test.js",
+    "test:state": "node --test test/daemon/services/state.test.js",
+    "test:ydotool": "node --test test/daemon/services/ydotool.test.js",
+    "test:hyprctl": "node --test test/daemon/services/hyprctl.test.js",
+    "lint": "node --check daemon.js && node --check bin/br.js && node --check src/cli/index.js && node --check src/cli/send.js && for f in src/cli/commands/*.js src/daemon/services/*.js; do node --check \"$f\" || exit 1; done",
+    "check": "node --check daemon.js && node --check bin/br.js"
+  },
   "dependencies": {
     "commander": "^11.1.0",
     "express": "^4.18.2",
