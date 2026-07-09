@@ -36,7 +36,7 @@ program.helpInformation = function () {
       primary.push('  ' + trimmed);
     } else if (trimmed.startsWith('click') || trimmed.startsWith('fill') || trimmed.startsWith('fill-secret') || trimmed.startsWith('type') || trimmed.startsWith('press')) {
       emergency.push('  ' + trimmed);
-    } else if (trimmed.startsWith('chain') || trimmed.startsWith('observe') || trimmed.startsWith('wait')) {
+    } else if (trimmed.startsWith('chain') || trimmed.startsWith('observe') || trimmed.startsWith('wait') || trimmed.startsWith('check')) {
       speed.push('  ' + trimmed);
     } else {
       others.push('  ' + trimmed);

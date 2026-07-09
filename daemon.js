@@ -456,8 +456,11 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
       }
       if (!steps.length) return res.status(400).send('no steps');
 
+      const stepResults = [];
+
       for (const step of steps) {
         const { action, args } = step;
+        const entry = { action, args };
         switch (action) {
           case 'goto':
             await page.goto(args[0]);
@@ -467,9 +470,56 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
             break;
           case 'press':
             await page.keyboard.press(args[0]);
+            entry.key = args[0];
             break;
           case 'click':
             await page.click(args[0]);
+            break;
+          case 'yclick':
+            if (!args[0]) throw new Error('yclick requires a selector');
+            await ensureClickable(args[0]);
+            const ypos = await getElementScreenPos(args[0]);
+            await hyprctl.focusChromiumWindow();
+            await new Promise(r => setTimeout(r, 50));
+            await ydotool.naturalMouseMove(ypos.screenX, ypos.screenY, hyprctl.getCursorPos);
+            await new Promise(r => setTimeout(r, 60 + Math.round(Math.random() * 30)));
+            await execAsync(`ydotool click C0`);
+            entry.x = ypos.screenX;
+            entry.y = ypos.screenY;
+            break;
+          case 'type':
+            await page.type(args[0], args.slice(1).join(' '));
+            break;
+          case 'eval':
+            const evalCode = args.join(' ');
+            const evalResult = await page.evaluate(evalCode);
+            entry.result = typeof evalResult === 'object' ? JSON.stringify(evalResult).substring(0, 500) : String(evalResult).substring(0, 500);
+            break;
+          case 'ydrag':
+            if (!args[0] || !args[1]) throw new Error('ydrag requires from and to selectors');
+            const fromPos = await getElementScreenPos(args[0]);
+            const toPos = await getElementScreenPos(args[1]);
+            await hyprctl.focusChromiumWindow();
+            await new Promise(r => setTimeout(r, 50));
+            await ydotool.naturalMouseMove(fromPos.screenX, fromPos.screenY, hyprctl.getCursorPos);
+            await new Promise(r => setTimeout(r, 80));
+            await execAsync('ydotool click 0x40');
+            await new Promise(r => setTimeout(r, 120));
+            await ydotool.naturalMouseMove(toPos.screenX, toPos.screenY, hyprctl.getCursorPos);
+            await new Promise(r => setTimeout(r, 80));
+            await execAsync('ydotool click 0x80');
+            entry.fromX = fromPos.screenX;
+            entry.fromY = fromPos.screenY;
+            entry.toX = toPos.screenX;
+            entry.toY = toPos.screenY;
+            break;
+          case 'screenshot':
+            const ssBuffer = await page.screenshot({ type: 'png' });
+            entry.screenshotBase64 = ssBuffer.toString('base64');
+            if (entry.screenshotBase64.length > 100000) {
+              entry.screenshotBase64 = entry.screenshotBase64.substring(0, 100000) + '...TRUNCATED';
+              entry.truncated = true;
+            }
             break;
           case 'wait':
             if (args[0] === 'networkidle') {
@@ -486,11 +536,18 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
           case 'scrollTo':
             await page.evaluate((pct) => window.scrollTo(0, document.body.scrollHeight * parseInt(pct) / 100), args[0]);
             break;
+          case 'scrollNext':
+            await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+            break;
+          case 'scrollPrev':
+            await page.evaluate(() => window.scrollBy(0, -window.innerHeight));
+            break;
           case 'observe':
             break;
           default:
             throw new Error('Unknown chain action: ' + action);
         }
+        stepResults.push(entry);
       }
 
       // Final Observe snapshot with XPath registration
@@ -554,6 +611,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
       delete result.xpathMap;
       const modals = await detectModals(page);
       if (modals.length) result.modals = modals;
+      result.steps = stepResults;
       res.json(result);
     } catch (err) {
       res.status(500).send(err.message);

@@ -166,6 +166,33 @@ br click "button.submit"
 
 Only use this if `yclick` fails. Playwright clicks are detectable by bot detection systems.
 
+### Speed commands: single round-trip pipelines
+
+`br chain` ejecuta múltiples acciones en una sola petición HTTP. Cada acción
+se separa con `|`. Soporta todas las acciones principales.
+
+**Ejemplos:**
+
+```bash
+# Tres clics, una sola petición (ideal para navegación rápida)
+br chain "yclick 22 | yclick 35 | yclick 12"
+
+# Buscar producto y añadirlo al carrito
+br chain "fill #search arroz | press Enter | wait 2000 | yclick 162"
+
+# Información + screenshot en un paso
+br chain "eval document.title | screenshot | observe"
+
+# Scroll y clic
+br chain "scrollIntoView #footer | yclick 45"
+
+# Pipeline completo: navegar, esperar, rellenar, hacer clic, observar
+br chain "goto https://example.com | wait networkidle | fill #q hello | press Enter | wait 3000 | observe"
+```
+
+La respuesta incluye un snapshot `observe` final con todos los elementos
+interactivos, texto visible, y resultados de cada paso.
+
 ### Fullscreen mode
 
 ```bash
