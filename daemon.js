@@ -328,12 +328,102 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     }
   });
 
+  function randInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  function drunkChar(char) {
+    const rows = ['qwertyuiop', 'asdfghjklñ', 'zxcvbnm'];
+    const lower = char.toLowerCase();
+    for (const row of rows) {
+      const idx = row.indexOf(lower);
+      if (idx >= 0) {
+        const neighbors = [];
+        if (idx > 0) neighbors.push(row[idx - 1]);
+        if (idx < row.length - 1) neighbors.push(row[idx + 1]);
+        if (neighbors.length) {
+          const wrong = neighbors[randInt(0, neighbors.length - 1)];
+          return char === char.toUpperCase() ? wrong.toUpperCase() : wrong;
+        }
+      }
+    }
+    return char;
+  }
+
+  async function humanType(page, selector, text) {
+    await sleep(randInt(100, 400));
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      await sleep(randInt(30, 180));
+
+      // Accidental double-char (3%)
+      if (Math.random() < 0.03) {
+        await page.keyboard.type(char);
+        await sleep(randInt(60, 150));
+        await page.keyboard.type(char);
+        await sleep(randInt(120, 250));
+        await page.keyboard.press('Backspace');
+        await sleep(randInt(50, 150));
+      }
+
+      // Typo (~12% chance per char)
+      if (Math.random() < 0.12 && char !== ' ') {
+        const wrong = drunkChar(char);
+        if (wrong !== char) {
+          await page.keyboard.type(wrong);
+          await sleep(randInt(200, 700));
+          await page.keyboard.press('Backspace');
+          await sleep(randInt(80, 250));
+        }
+      }
+
+      // Type the correct char
+      await page.keyboard.type(char);
+
+      // Introspective pause mid-word (6%)
+      if (Math.random() < 0.06) {
+        await sleep(randInt(500, 1500));
+      }
+
+      // Burst: type next few chars fast (15%)
+      if (Math.random() < 0.15 && i + 1 < text.length) {
+        const burst = randInt(1, 3);
+        for (let b = 0; b < burst && i + b + 1 < text.length; b++) {
+          await page.keyboard.type(text[i + b + 1]);
+          await sleep(randInt(10, 35));
+        }
+        i += burst;
+      }
+
+      // Space pause (30% chance after space)
+      if (char === ' ' && Math.random() < 0.3) {
+        await sleep(randInt(150, 500));
+      }
+    }
+  }
+
   app.post('/type', async (req, res) => {
-    const { selector, text } = req.body;
+    const { selector, text, precise } = req.body;
     if (!selector || text === undefined) return res.status(400).send('missing selector or text');
     try {
-      await getActivePage().type(selector, text);
-      state.record('type', { selector });
+      const page = getActivePage();
+      // Find and focus element via DOM (avoids Playwright locator timeout)
+      const found = await page.evaluate((sel) => {
+        const el = document.querySelector(sel) || document.querySelector(`[data-testid="${sel}"]`);
+        if (el) { el.value = ''; el.focus(); return true; }
+        return false;
+      }, selector);
+      if (!found) return res.status(400).send('Element not found: ' + selector);
+      if (precise) {
+        for (const ch of text) {
+          await page.keyboard.type(ch);
+          await sleep(randInt(10, 30));
+        }
+      } else {
+        await humanType(page, selector, text);
+      }
+      state.record('type', { selector, precise: !!precise });
       res.send('ok');
     } catch (err) {
       res.status(500).send(err.message);
@@ -488,7 +578,22 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
             entry.y = ypos.screenY;
             break;
           case 'type':
-            await page.type(args[0], args.slice(1).join(' '));
+            const typeIdx = args[0] === '--precise' ? 1 : 0;
+            const typeSelector = args[typeIdx];
+            const typeText = args.slice(typeIdx + 1).join(' ');
+            const typePrecise = args[0] === '--precise';
+            await page.evaluate((sel) => {
+              const el = document.querySelector(sel) || document.querySelector(`[data-testid="${sel}"]`);
+              if (el) { el.value = ''; el.focus(); }
+            }, typeSelector);
+            if (typePrecise) {
+              for (const ch of typeText) {
+                await page.keyboard.type(ch);
+                await sleep(randInt(10, 30));
+              }
+            } else {
+              await humanType(page, typeSelector, typeText);
+            }
             break;
           case 'eval':
             const evalCode = args.join(' ');

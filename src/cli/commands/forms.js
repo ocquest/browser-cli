@@ -41,10 +41,12 @@ module.exports = function (program) {
     .description('Simulate typing text into a form field, character by character.')
     .argument('<selectorOrId>', 'The CSS selector or node ID for the input field.')
     .argument('<text>', 'The text to type into the field.')
-    .action(async (selector, text) => {
+    .option('--precise', 'Type without human-like typos and delays (clean, fast).')
+    .action(async (selector, text, opts) => {
       try {
-        await send('/type', 'POST', { selector, text });
-        console.log('Typed text into', selector);
+        await send('/type', 'POST', { selector, text, precise: !!opts.precise });
+        const mode = opts.precise ? ' (precise)' : ' (drunk)';
+        console.log('Typed text into', selector + mode);
       } catch (error) {
         console.error('Error typing into field:', error);
       }
