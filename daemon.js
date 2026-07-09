@@ -1107,10 +1107,16 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     const windowPos = await hyprctl.getChromiumWindowPos();
     if (!windowPos) throw new Error('No chromium-browser window found via hyprctl');
     const offset = state.getCalibrationOffset();
+    const marginX = Math.max(2, box.width * 0.15);
+    const marginY = Math.max(2, box.height * 0.15);
+    const randomX = box.x + marginX + Math.random() * (box.width - 2 * marginX);
+    const randomY = box.y + marginY + Math.random() * (box.height - 2 * marginY);
     return {
-      screenX: Math.round(windowPos.x + box.x + box.width / 2 + offset.x),
-      screenY: Math.round(windowPos.y + box.y + box.height / 2 + offset.y),
-      windowPos, box
+      screenX: Math.round(windowPos.x + randomX + offset.x),
+      screenY: Math.round(windowPos.y + randomY + offset.y),
+      windowPos, box,
+      centerX: Math.round(windowPos.x + box.x + box.width / 2 + offset.x),
+      centerY: Math.round(windowPos.y + box.y + box.height / 2 + offset.y)
     };
   }
 
