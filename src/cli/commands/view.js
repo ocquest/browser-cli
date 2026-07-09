@@ -3,28 +3,29 @@ const { send } = require('../send');
 module.exports = function (program) {
   program
     .command('view-html')
-    .description('Output the full HTML source of the current page (paginated, 5000 chars per page).')
-    .option('-p, --page <number>', 'Page number to view', '1')
+    .description('Output HTML source. Use --page for paginated view, or --offset/--limit for range (like cat).')
+    .option('-p, --page <number>', 'Page number (5000 chars per page)')
+    .option('-o, --offset <number>', 'Character offset to start from')
+    .option('-l, --limit <number>', 'Max characters to return')
     .action(async (opts) => {
       try {
-        const page = Number(opts.page) || 1;
-        const html = await send(`/html?page=${page}`);
-        if (html.length === 0) {
-          console.log('No HTML content found for this page.');
-          return;
-        }
-        const PAGE_SIZE = 5000;
-        const totalPages = Math.ceil(html.length / PAGE_SIZE);
-        const start = (page - 1) * PAGE_SIZE;
-        const end = start + PAGE_SIZE;
-        const chunk = html.slice(start, end);
-        console.log(chunk);
-        console.log(`\n--- Page ${page} of ${totalPages} ---`);
-        if (totalPages > 1) {
-          console.log('Use --page <n> to view a different page.');
-        }
-        if (html.length > PAGE_SIZE) {
-          console.log('Hint: If the HTML is too large to view comfortably, try the "view-tree" command for a structured overview.');
+        const page = Number(opts.page) || 0;
+        const offset = Number(opts.offset) || 0;
+        const limit = Number(opts.limit) || 0;
+        let html;
+        if (opts.page) {
+          html = await send(`/html?offset=${(page - 1) * 5000}&limit=5000`);
+          if (html.length === 0) {
+            console.log('No HTML content found for this page.');
+            return;
+          }
+          console.log(html);
+          console.log(`\n--- Page ${page} ---`);
+        } else {
+          const qs = offset || limit ? `?offset=${offset}&limit=${limit}` : '';
+          html = await send('/html' + qs);
+          console.log(html);
+          if (html.length === 0) console.log('(empty)');
         }
       } catch (error) {
         console.error('Error viewing HTML:', error);

@@ -12,6 +12,9 @@ require('./commands/fullscreen')(program);
 require('./commands/llm')(program);
 require('./commands/captcha')(program);
 require('./commands/history')(program);
+require('./commands/wait')(program);
+require('./commands/observe')(program);
+require('./commands/chain')(program);
 
 const origHelp = program.helpInformation.bind(program);
 program.helpInformation = function () {
@@ -19,6 +22,7 @@ program.helpInformation = function () {
   const others = [];
   const primary = [];
   const emergency = [];
+  const speed = [];
   let inCommands = false;
   for (const line of lines) {
     if (line.trim().startsWith('Commands:')) {
@@ -32,12 +36,19 @@ program.helpInformation = function () {
       primary.push('  ' + trimmed);
     } else if (trimmed.startsWith('click') || trimmed.startsWith('fill') || trimmed.startsWith('fill-secret') || trimmed.startsWith('type') || trimmed.startsWith('press')) {
       emergency.push('  ' + trimmed);
+    } else if (trimmed.startsWith('chain') || trimmed.startsWith('observe') || trimmed.startsWith('wait')) {
+      speed.push('  ' + trimmed);
     } else {
       others.push('  ' + trimmed);
     }
   }
   const header = lines.slice(0, lines.findIndex(l => l.trim().startsWith('Commands:'))).join('\n');
   const out = [header, '', 'Commands:', ''];
+  if (speed.length) {
+    out.push('  Speed commands (single HTTP round trip — replaces manual waits & round trips):');
+    out.push(...speed);
+    out.push('');
+  }
   if (primary.length) {
     out.push('  Primary methods (ydotool — undetectable, recommended):');
     out.push(...primary);

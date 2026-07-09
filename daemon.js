@@ -344,10 +344,176 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     }
   });
 
+  app.post('/wait', async (req, res) => {
+    try {
+      const page = getActivePage();
+      const { type, arg, ms } = req.body;
+      if (type === 'selector') {
+        await page.waitForSelector(arg, { timeout: 30000 });
+      } else if (type === 'networkidle') {
+        await page.waitForLoadState('networkidle', { timeout: 30000 });
+      } else if (type === 'timeout' || type === 'ms') {
+        await sleep(ms || parseInt(arg) || 1000);
+      } else {
+        await sleep(1000);
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
+  app.get('/observe', async (req, res) => {
+    try {
+      const page = getActivePage();
+      const result = await page.evaluate(() => {
+        const interactive = [];
+        const seen = new Set();
+        const selectors = 'a[href], button, input:not([type=hidden]), textarea, select, [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])';
+        const elements = document.querySelectorAll(selectors);
+        let idCounter = 0;
+        for (const el of elements) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue;
+          if (rect.x > window.innerWidth + 50 || rect.y > window.innerHeight + 50) continue;
+          const tag = el.tagName.toLowerCase();
+          const text = (el.textContent || '').trim().substring(0, 120);
+          const aria = el.getAttribute('aria-label') || '';
+          const placeholder = el.getAttribute('placeholder') || '';
+          const href = el.getAttribute('href') || '';
+          const role = el.getAttribute('role') || '';
+          const type = el.getAttribute('type') || '';
+          const label = (text || aria || placeholder || '').substring(0, 80);
+          if (!label && !href && tag !== 'input' && tag !== 'textarea') continue;
+          if (tag === 'a' && !href) continue;
+          const key = tag + '|' + label + '|' + href;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          interactive.push({
+            id: ++idCounter, tag, role, type,
+            label,
+            href: href.substring(0, 200),
+            inViewport: rect.y < window.innerHeight && rect.x < window.innerWidth
+          });
+        }
+        return {
+          url: window.location.href,
+          title: document.title,
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          scrollY: window.scrollY,
+          scrollH: document.body.scrollHeight,
+          interactive: interactive.slice(0, 200),
+          text: document.body.innerText.trim().substring(0, 5000)
+        };
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
+  app.post('/chain', async (req, res) => {
+    try {
+      const page = getActivePage();
+      let steps = req.body.steps || [];
+      if (typeof req.body.pipeline === 'string') {
+        steps = req.body.pipeline.split('|').map(s => s.trim()).filter(Boolean).map(s => {
+          const parts = s.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+          return { action: parts[0], args: parts.slice(1).map(a => a.replace(/^"(.*)"$/, '$1')) };
+        });
+      }
+      if (!steps.length) return res.status(400).send('no steps');
+
+      for (const step of steps) {
+        const { action, args } = step;
+        switch (action) {
+          case 'goto':
+            await page.goto(args[0]);
+            break;
+          case 'fill':
+            await page.fill(args[0], args.slice(1).join(' '));
+            break;
+          case 'press':
+            await page.keyboard.press(args[0]);
+            break;
+          case 'click':
+            await page.click(args[0]);
+            break;
+          case 'wait':
+            if (args[0] === 'networkidle') {
+              await page.waitForLoadState('networkidle', { timeout: 30000 });
+            } else if (args[0] === 'selector' && args[1]) {
+              await page.waitForSelector(args[1], { timeout: 30000 });
+            } else {
+              await sleep(parseInt(args[0]) || 1000);
+            }
+            break;
+          case 'scrollIntoView':
+            await page.evaluate((sel) => document.querySelector(sel)?.scrollIntoView({ behavior: 'instant', block: 'center' }), args[0]);
+            break;
+          case 'scrollTo':
+            await page.evaluate((pct) => window.scrollTo(0, document.body.scrollHeight * parseInt(pct) / 100), args[0]);
+            break;
+          case 'observe':
+            break;
+          default:
+            throw new Error('Unknown chain action: ' + action);
+        }
+      }
+
+      // Final Observe snapshot
+      const result = await page.evaluate(() => {
+        const interactive = [];
+        const seen = new Set();
+        const selectors = 'a[href], button, input:not([type=hidden]), textarea, select, [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])';
+        const elements = document.querySelectorAll(selectors);
+        let idCounter = 0;
+        for (const el of elements) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue;
+          if (rect.x > window.innerWidth + 50 || rect.y > window.innerHeight + 50) continue;
+          const tag = el.tagName.toLowerCase();
+          const text = (el.textContent || '').trim().substring(0, 120);
+          const aria = el.getAttribute('aria-label') || '';
+          const placeholder = el.getAttribute('placeholder') || '';
+          const href = el.getAttribute('href') || '';
+          const role = el.getAttribute('role') || '';
+          const label = (text || aria || placeholder || '').substring(0, 80);
+          if (!label && !href && tag !== 'input' && tag !== 'textarea') continue;
+          if (tag === 'a' && !href) continue;
+          const key = tag + '|' + label + '|' + href;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          interactive.push({
+            id: ++idCounter, tag, role,
+            type: el.getAttribute('type') || '',
+            label,
+            href: href.substring(0, 200),
+            inViewport: rect.y < window.innerHeight && rect.x < window.innerWidth
+          });
+        }
+        return {
+          url: window.location.href,
+          title: document.title,
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          scrollY: window.scrollY,
+          scrollH: document.body.scrollHeight,
+          interactive: interactive.slice(0, 200),
+          text: document.body.innerText.trim().substring(0, 5000)
+        };
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
   app.get('/html', async (req, res) => {
     try {
       const html = await getActivePage().content();
-      res.type('html').send(html);
+      const offset = parseInt(req.query.offset) || 0;
+      const limit = parseInt(req.query.limit) || html.length;
+      res.type('html').send(html.slice(offset, limit ? offset + limit : undefined));
     } catch (err) {
       res.status(500).send(err.message);
     }
@@ -420,16 +586,18 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
       const result = tree.tree;
 
       function formatTree(node, prefix = '') {
+        if (!node) return '';
         let text = prefix + '[' + node.id + '] ' + node.line;
         if (node.children) {
           for (const child of node.children) {
+            if (!child) continue;
             text += '\n' + formatTree(child, prefix + '  ');
           }
         }
         return text;
       }
 
-      res.json({ tree: formatTree(result) });
+      res.json({ tree: result ? formatTree(result) : '' });
     } catch (err) {
       res.status(500).send(err.message + " " + err.stack);
     }
