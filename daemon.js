@@ -357,6 +357,8 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
       const char = text[i];
       await sleep(randInt(30, 180));
 
+      let typed = false;
+
       // Accidental double-char (3%)
       if (Math.random() < 0.03) {
         await page.keyboard.type(char);
@@ -364,7 +366,8 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
         await page.keyboard.type(char);
         await sleep(randInt(120, 250));
         await page.keyboard.press('Backspace');
-        await sleep(randInt(50, 150));
+        await sleep(randInt(50, 120));
+        typed = true;
       }
 
       // Typo (~12% chance per char)
@@ -378,8 +381,10 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
         }
       }
 
-      // Type the correct char
-      await page.keyboard.type(char);
+      // Type the correct char (skip if already typed by double-char)
+      if (!typed) {
+        await page.keyboard.type(char);
+      }
 
       // Introspective pause mid-word (6%)
       if (Math.random() < 0.06) {
