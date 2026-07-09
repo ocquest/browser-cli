@@ -35,7 +35,7 @@ module.exports = function (program) {
       if (opts.apiKey) env.BR_LLM_API_KEY = opts.apiKey;
       if (opts.proxy) env.BR_PROXY = opts.proxy;
 
-      const child = spawn(process.execPath, [path.join(__dirname, '../../daemon.js')], {
+      const child = spawn(process.execPath, [path.join(__dirname, '../../../daemon.js')], {
         detached: true,
         stdio: ['pipe', 'pipe', 'pipe'],
         env

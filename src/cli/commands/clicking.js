@@ -3,7 +3,7 @@ const { send } = require('../send');
 module.exports = function (program) {
   program
     .command('click')
-    .description('**(FALLBACK)** Click an element using Playwright (detectable). Prefer "br yclick" instead.')
+    .description('Click an element using Playwright (detectable — fallback).')
     .argument('<selectorOrId>', 'The CSS selector or node ID for the element to click.')
     .action(async (selector) => {
       try {
@@ -16,7 +16,7 @@ module.exports = function (program) {
 
   program
     .command('yclick')
-    .description('**(RECOMMENDED)** Click an element using ydotool with natural mouse movement (undetectable).')
+    .description('Click an element using ydotool with natural mouse movement (undetectable).')
     .argument('<selectorOrId>', 'Node ID from view-tree (e.g. "22"), or CSS/XPath selector.')
     .action(async (selector) => {
       try {
@@ -29,7 +29,7 @@ module.exports = function (program) {
 
   program
     .command('ydrag')
-    .description('**(RECOMMENDED)** Drag from one element to another using ydotool (mousedown to move to mouseup).')
+    .description('Drag from one element to another using ydotool (mousedown to move to mouseup).')
     .argument('<fromSelector>', 'Node ID or selector for the source (draggable) element.')
     .argument('<toSelector>', 'Node ID or selector for the target (drop zone) element.')
     .action(async (from, to) => {

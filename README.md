@@ -23,8 +23,21 @@ https://www.npmjs.com/package/@browsemake/browser-cli
 - **Robust**: browser persisted progress across session, and track history action for replay
 
 ## Install
+
+### Global (npm)
 ```bash
 npm install -g @browsemake/browser-cli
+```
+
+### Local (clone)
+```bash
+git clone https://github.com/browsemake/browser-cli.git
+cd browser-cli
+npm install
+alias br="node $PWD/bin/br.js"   # temporal, o añade a ~/.bashrc
+
+# Opcional: registrar el binario local globalmente
+npm link
 ```
 
 ## Usage
