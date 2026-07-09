@@ -299,9 +299,17 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     const { selector, text } = req.body;
     if (!selector || text === undefined) return res.status(400).send('missing selector or text');
     try {
-      await getActivePage().fill(selector, text);
+      const page = getActivePage();
+      const modals = await detectModals(page);
+      if (modals.length) await autoDismissBlockers(page);
+      await page.fill(selector, text);
+      const actual = await page.evaluate((sel) => {
+        const el = document.querySelector(sel) || document.querySelector(`[data-testid="${sel}"]`);
+        if (el) return el.value || el.textContent || '';
+        return null;
+      }, selector);
       state.record('fill', { selector });
-      res.send('ok');
+      res.json({ ok: true, filled: text.substring(0, 50), verified: actual && actual.includes(text.substring(0, 20)) });
     } catch (err) {
       res.status(500).send(err.message);
     }
@@ -336,9 +344,12 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     const { key } = req.body;
     if (!key) return res.status(400).send('missing key');
     try {
-      await getActivePage().keyboard.press(key);
+      const page = getActivePage();
+      const modals = await detectModals(page);
+      if (modals.length) await autoDismissBlockers(page);
+      await page.keyboard.press(key);
       state.record('press', { key });
-      res.send('ok');
+      res.json({ ok: true, key });
     } catch (err) {
       res.status(500).send(err.message);
     }
@@ -366,12 +377,25 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
   app.get('/observe', async (req, res) => {
     try {
       const page = getActivePage();
+      const idToXPath = {};
       const result = await page.evaluate(() => {
+        function getXPath(node) {
+          if (node === document.body) return '/html/body';
+          if (node === document.documentElement) return '/html';
+          if (node === document) return '';
+          const parent = node.parentNode;
+          if (!parent) return '';
+          const siblings = Array.from(parent.childNodes).filter(n => n.nodeType === Node.ELEMENT_NODE);
+          const sameTag = siblings.filter(n => n.nodeName === node.nodeName);
+          const idx = sameTag.indexOf(node) + 1;
+          return getXPath(parent) + '/' + node.nodeName.toLowerCase() + '[' + idx + ']';
+        }
         const interactive = [];
         const seen = new Set();
         const selectors = 'a[href], button, input:not([type=hidden]), textarea, select, [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])';
         const elements = document.querySelectorAll(selectors);
         let idCounter = 0;
+        const xpathMap = {};
         for (const el of elements) {
           const rect = el.getBoundingClientRect();
           if (rect.width === 0 || rect.height === 0) continue;
@@ -389,8 +413,11 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
           const key = tag + '|' + label + '|' + href;
           if (seen.has(key)) continue;
           seen.add(key);
+          const id = ++idCounter;
+          const xpath = getXPath(el);
+          xpathMap[id] = xpath;
           interactive.push({
-            id: ++idCounter, tag, role, type,
+            id, tag, role, type,
             label,
             href: href.substring(0, 200),
             inViewport: rect.y < window.innerHeight && rect.x < window.innerWidth
@@ -403,9 +430,14 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
           scrollY: window.scrollY,
           scrollH: document.body.scrollHeight,
           interactive: interactive.slice(0, 200),
-          text: document.body.innerText.trim().substring(0, 5000)
+          text: document.body.innerText.trim().substring(0, 5000),
+          xpathMap
         };
       });
+      state.setIdToXPath(result.xpathMap || {});
+      delete result.xpathMap;
+      const modals = await detectModals(page);
+      if (modals.length) result.modals = modals;
       res.json(result);
     } catch (err) {
       res.status(500).send(err.message);
@@ -461,13 +493,25 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
         }
       }
 
-      // Final Observe snapshot
+      // Final Observe snapshot with XPath registration
       const result = await page.evaluate(() => {
+        function getXPath(node) {
+          if (node === document.body) return '/html/body';
+          if (node === document.documentElement) return '/html';
+          if (node === document) return '';
+          const parent = node.parentNode;
+          if (!parent) return '';
+          const siblings = Array.from(parent.childNodes).filter(n => n.nodeType === Node.ELEMENT_NODE);
+          const sameTag = siblings.filter(n => n.nodeName === node.nodeName);
+          const idx = sameTag.indexOf(node) + 1;
+          return getXPath(parent) + '/' + node.nodeName.toLowerCase() + '[' + idx + ']';
+        }
         const interactive = [];
         const seen = new Set();
         const selectors = 'a[href], button, input:not([type=hidden]), textarea, select, [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])';
         const elements = document.querySelectorAll(selectors);
         let idCounter = 0;
+        const xpathMap = {};
         for (const el of elements) {
           const rect = el.getBoundingClientRect();
           if (rect.width === 0 || rect.height === 0) continue;
@@ -484,8 +528,11 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
           const key = tag + '|' + label + '|' + href;
           if (seen.has(key)) continue;
           seen.add(key);
+          const id = ++idCounter;
+          const xpath = getXPath(el);
+          xpathMap[id] = xpath;
           interactive.push({
-            id: ++idCounter, tag, role,
+            id, tag, role,
             type: el.getAttribute('type') || '',
             label,
             href: href.substring(0, 200),
@@ -499,9 +546,14 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
           scrollY: window.scrollY,
           scrollH: document.body.scrollHeight,
           interactive: interactive.slice(0, 200),
-          text: document.body.innerText.trim().substring(0, 5000)
+          text: document.body.innerText.trim().substring(0, 5000),
+          xpathMap
         };
       });
+      state.setIdToXPath(result.xpathMap || {});
+      delete result.xpathMap;
+      const modals = await detectModals(page);
+      if (modals.length) result.modals = modals;
       res.json(result);
     } catch (err) {
       res.status(500).send(err.message);
@@ -957,69 +1009,13 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     let check = await checkAndDismiss();
     if (check.clickable) return element;
 
-    // Try to dismiss common blockers
-    const acceptCookieViaEval = async () => {
-      await page.evaluate(() => {
-        // Try common cookie acceptance selectors
-        const selectors = [
-          '#sp-cc-accept',
-          '.fc-cta-consent',
-          '.cookie-accept',
-          'button[aria-label*="cookie" i]',
-          'button[aria-label*="accept" i]',
-          '#onetrust-accept-btn-handler',
-          '.cc-btn',
-          '.accept-cookies',
-        ];
-        // Universal fallback: match any button by text content
-        for (const btn of document.querySelectorAll('button')) {
-          const t = (btn.textContent || '').trim().toLowerCase();
-          if (t === 'accept' || t === 'aceptar' || t === 'accept all' || t === 'aceptar todas') {
-            btn.click(); return true;
-          }
-        }
-        for (const sel of selectors) {
-          const btn = document.querySelector(sel);
-          if (btn) { btn.click(); return true; }
-        }
-        // Try iframe cookie banners
-        const iframe = document.getElementById('fast-cmp-iframe') || document.querySelector('iframe[title*="cookie" i]');
-        if (iframe) {
-          try {
-            const doc = iframe.contentDocument || iframe.contentWindow.document;
-            const btn = doc.querySelector('button');
-            if (btn) { btn.click(); return true; }
-          } catch (_) {}
-        }
-        return false;
-      });
-    };
+    // Try dismissing blockers
+    await autoDismissBlockers(page);
+    await new Promise(r => setTimeout(r, 500));
+    check = await checkAndDismiss();
+    if (check.clickable) return element;
 
-    // If covered by an iframe, try clicking a button inside it
-    if (check.coveringTag === 'IFRAME' && check.coveringId) {
-      await page.evaluate((id) => {
-        const iframe = document.getElementById(id);
-        if (!iframe) return;
-        try {
-          const doc = iframe.contentDocument || iframe.contentWindow.document;
-          const btns = doc.querySelectorAll('button');
-          for (const btn of btns) { btn.click(); }
-        } catch (_) {}
-      }, check.coveringId);
-      await new Promise(r => setTimeout(r, 500));
-      check = await checkAndDismiss();
-      if (check.clickable) return element;
-    }
-
-    // Try generic dismiss: click the first button in the covering element
-    if (!check.clickable) {
-      await acceptCookieViaEval();
-      await new Promise(r => setTimeout(r, 500));
-      check = await checkAndDismiss();
-      if (check.clickable) return element;
-    }
-
-    // Try closing via overlay click (click top-center of covering element)
+    // Try closing via overlay click
     if (!check.clickable) {
       await page.evaluate(() => {
         const overlay = document.querySelector('[class*="modal"], [class*="overlay"], [class*="popup"], [class*="dialog"]');
@@ -1059,6 +1055,115 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
       windowPos, box
     };
   }
+
+  async function detectModals(page) {
+    try {
+      return await page.evaluate(() => {
+        const warnings = [];
+        const dialogs = document.querySelectorAll('[role=\"dialog\"], [role=\"alertdialog\"]');
+        for (const d of dialogs) {
+          if (d.offsetParent !== null) {
+            warnings.push({ type: 'dialog', text: (d.textContent || '').trim().substring(0, 200) });
+          }
+        }
+        const overlaySel = '[class*=\"overlay\"], [class*=\"modal\"], [class*=\"popup\"], [class*=\"backdrop\"], [class*=\"cookie\"], [id*=\"cookie\"], [class*=\"consent\"]';
+        const overlays = document.querySelectorAll(overlaySel);
+        for (const o of overlays) {
+          if (o.offsetParent !== null && o.getBoundingClientRect().width > 0) {
+            warnings.push({ type: 'overlay', text: (o.textContent || '').trim().substring(0, 200) });
+          }
+        }
+        return warnings;
+      });
+    } catch { return []; }
+  }
+
+  async function autoDismissBlockers(page) {
+    try {
+      await page.evaluate(() => {
+        // Common cookie/consent buttons
+        const selectors = [
+          '#sp-cc-accept', '.fc-cta-consent', '.cookie-accept',
+          'button[aria-label*=\"cookie\" i]', 'button[aria-label*=\"accept\" i]',
+          '#onetrust-accept-btn-handler', '.cc-btn', '.accept-cookies',
+          'button:has-text(\"Accept\")', 'button:has-text(\"Aceptar\")',
+          'button:has-text(\"Accept all\")', 'button:has-text(\"Aceptar todas\")',
+        ];
+        for (const sel of selectors) {
+          const btn = document.querySelector(sel);
+          if (btn) { btn.click(); return true; }
+        }
+        // Fallback: find any visible button with accept text
+        for (const btn of document.querySelectorAll('button')) {
+          const t = (btn.textContent || '').trim().toLowerCase();
+          if (['accept', 'aceptar', 'accept all', 'aceptar todas', 'ok', 'de acuerdo'].includes(t)) {
+            btn.click(); return true;
+          }
+        }
+        // Try iframe cookie banners
+        const iframe = document.getElementById('fast-cmp-iframe') || document.querySelector('iframe[title*=\"cookie\" i]');
+        if (iframe) {
+          try {
+            const doc = iframe.contentDocument || iframe.contentWindow.document;
+            const btn = doc.querySelector('button');
+            if (btn) { btn.click(); return true; }
+          } catch (_) {}
+        }
+        return false;
+      });
+    } catch {}
+  }
+
+  // Scroll routes
+  app.post('/scroll-into-view', async (req, res) => {
+    try {
+      const { selector } = req.body;
+      if (!selector) return res.status(400).send('missing selector');
+      const resolved = await resolveSelector(selector);
+      const isNumericId = !isNaN(selector) && !isNaN(parseFloat(selector));
+      const page = getActivePage();
+      const el = isNumericId ? await page.$('xpath=' + resolved) : await page.$(resolved);
+      if (el) await el.scrollIntoViewIfNeeded();
+      res.send('ok');
+    } catch (err) { res.status(500).send(err.message); }
+  });
+
+  app.post('/scroll-to', async (req, res) => {
+    try {
+      const { percentage } = req.body;
+      const pct = parseInt(percentage) || 0;
+      await getActivePage().evaluate((p) => window.scrollTo(0, document.body.scrollHeight * p / 100), pct);
+      res.send('ok');
+    } catch (err) { res.status(500).send(err.message); }
+  });
+
+  app.post('/next-chunk', async (req, res) => {
+    try {
+      await getActivePage().evaluate(() => window.scrollBy(0, window.innerHeight));
+      res.send('ok');
+    } catch (err) { res.status(500).send(err.message); }
+  });
+
+  app.post('/prev-chunk', async (req, res) => {
+    try {
+      await getActivePage().evaluate(() => window.scrollBy(0, -window.innerHeight));
+      res.send('ok');
+    } catch (err) { res.status(500).send(err.message); }
+  });
+
+  app.get('/check', async (req, res) => {
+    try {
+      const page = getActivePage();
+      const modals = await detectModals(page);
+      const info = await page.evaluate(() => ({
+        url: window.location.href,
+        title: document.title,
+        scrollY: window.scrollY,
+        scrollH: document.body.scrollHeight
+      }));
+      res.json({ ok: true, modals, ...info });
+    } catch (err) { res.status(500).send(err.message); }
+  });
 
   app.post('/ydrag', async (req, res) => {
     const { from, to } = req.body;
