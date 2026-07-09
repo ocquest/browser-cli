@@ -1022,16 +1022,50 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
     return state.resolveSelector(selector);
   }
 
-  async function ensureClickable(selector) {
+  async function findElement(selector) {
     const isNumericId = !isNaN(selector) && !isNaN(parseFloat(selector));
-    const resolved = await resolveSelector(selector);
+    if (!isNumericId) return { element: await getActivePage().$(selector), useXpath: false, selector };
+    try {
+      const xpath = await resolveSelector(selector);
+      const el = await getActivePage().$('xpath=' + xpath);
+      if (el) return { element: el, useXpath: true, selector: xpath };
+    } catch {}
+    // Fallback: find Nth interactive element on-the-fly and compute its XPath
+    const xpath = await getActivePage().evaluate((id) => {
+      function getXPath(node) {
+        if (node === document.body) return '/html/body';
+        if (node === document.documentElement) return '/html';
+        const parent = node.parentNode;
+        if (!parent) return '';
+        const siblings = Array.from(parent.childNodes).filter(n => n.nodeType === Node.ELEMENT_NODE);
+        const sameTag = siblings.filter(n => n.nodeName === node.nodeName);
+        const idx = sameTag.indexOf(node) + 1;
+        return getXPath(parent) + '/' + node.nodeName.toLowerCase() + '[' + idx + ']';
+      }
+      const selectors = 'a[href], button, input:not([type=hidden]), textarea, select, [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])';
+      const els = document.querySelectorAll(selectors);
+      let count = 0;
+      for (const el of els) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        if (rect.x > window.innerWidth + 50 || rect.y > window.innerHeight + 50) continue;
+        if (++count === parseInt(id)) return getXPath(el);
+      }
+      return null;
+    }, selector);
+    if (!xpath) throw new Error(`Element not found for ID ${selector}`);
+    const el = await getActivePage().$('xpath=' + xpath);
+    if (!el) throw new Error(`Element not found for ID ${selector}`);
+    return { element: el, useXpath: true, selector: xpath };
+  }
+
+  async function ensureClickable(selector) {
+    const { element, useXpath, selector: resolved } = await findElement(selector);
     const page = getActivePage();
-    const element = isNumericId ? await page.$('xpath=' + resolved) : await page.$(resolved);
     if (!element) throw new Error(`Element not found: ${selector}`);
 
     // Check coverage and try to dismiss blockers
     const checkAndDismiss = async () => {
-      const useXpath = isNumericId;
       const result = await page.evaluate(({ sel, useXpath }) => {
         const target = useXpath
           ? document.evaluate(sel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
@@ -1095,11 +1129,8 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
 
   async function getElementScreenPos(selector) {
     if (!selector) throw new Error('missing selector');
-    const isNumericId = !isNaN(selector) && !isNaN(parseFloat(selector));
-    const resolved = await resolveSelector(selector);
+    const { element } = await findElement(selector);
     const page = getActivePage();
-    const element = isNumericId ? await page.$('xpath=' + resolved) : await page.$(resolved);
-    if (!element) throw new Error(`Element not found for selector: ${selector}`);
     await element.scrollIntoViewIfNeeded();
     await new Promise(r => setTimeout(r, 100));
     const box = await element.boundingBox();

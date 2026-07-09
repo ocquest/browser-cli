@@ -16,13 +16,17 @@ async function naturalMouseMove(targetX, targetY, getCursorPos) {
   const dist = Math.sqrt(dy * dy + dx * dx);
   if (dist < 8) return;
 
-  const steps = Math.max(6, Math.min(30, Math.round(dist / 30)));
+  // Random waypoint for curved path (quadratic bezier)
+  const midX = (start.x + targetX) / 2 + (Math.random() - 0.5) * dist * 0.6;
+  const midY = (start.y + targetY) / 2 + (Math.random() - 0.5) * dist * 0.6;
+
+  const steps = Math.max(8, Math.min(40, Math.round(dist / 20)));
 
   for (let i = 1; i <= steps; i++) {
     let t = i / steps;
-    t = t * t * (3 - 2 * t);
-    const px = lerp(start.x, targetX, t) + rand(-1.2, 1.2);
-    const py = lerp(start.y, targetY, t) + rand(-1.2, 1.2);
+    // Quadratic bezier: (1-t)²·P0 + 2(1-t)·t·P1 + t²·P2
+    const px = (1 - t) * (1 - t) * start.x + 2 * (1 - t) * t * midX + t * t * targetX + rand(-1.2, 1.2);
+    const py = (1 - t) * (1 - t) * start.y + 2 * (1 - t) * t * midY + t * t * targetY + rand(-1.2, 1.2);
     const ydoX = Math.round(px / 2);
     const ydoY = Math.round(py / 2);
     await execAsync(`ydotool mousemove --absolute -x ${ydoX} -y ${ydoY}`);
