@@ -802,10 +802,14 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
           '#onetrust-accept-btn-handler',
           '.cc-btn',
           '.accept-cookies',
-          'button:has-text("Accept")',
-          'button:has-text("Aceptar")',
-          'button:has-text("Accept all")'
         ];
+        // Universal fallback: match any button by text content
+        for (const btn of document.querySelectorAll('button')) {
+          const t = (btn.textContent || '').trim().toLowerCase();
+          if (t === 'accept' || t === 'aceptar' || t === 'accept all' || t === 'aceptar todas') {
+            btn.click(); return true;
+          }
+        }
         for (const sel of selectors) {
           const btn = document.querySelector(sel);
           if (btn) { btn.click(); return true; }
