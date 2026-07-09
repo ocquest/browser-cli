@@ -20,8 +20,9 @@ module.exports = function (program) {
     .argument('<selectorOrId>', 'Node ID from view-tree (e.g. "22"), or CSS/XPath selector.')
     .action(async (selector) => {
       try {
-        await send('/yclick', 'POST', { selector });
-        console.log('yclicked', selector);
+        const res = await send('/yclick', 'POST', { selector });
+        const data = JSON.parse(res);
+        console.log('yclicked', selector, `at (${data.x}, ${data.y})`);
       } catch (error) {
         console.error('Error yclicking element:', error);
       }

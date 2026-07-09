@@ -278,7 +278,7 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
       await new Promise(r => setTimeout(r, 60 + Math.round(Math.random() * 30)));
       await execAsync(`ydotool click C0`);
       state.record('yclick', { selector: req.body.selector, ...pos });
-      res.send('ok');
+      res.json({ ok: true, selector: req.body.selector, x: pos.screenX, y: pos.screenY });
     } catch (err) {
       res.status(500).send(err.message);
     }

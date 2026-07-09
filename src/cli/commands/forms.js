@@ -8,8 +8,10 @@ module.exports = function (program) {
     .argument('<text>', 'The text to fill the field with.')
     .action(async (selector, text) => {
       try {
-        await send('/fill', 'POST', { selector, text });
-        console.log('Filled', selector);
+        const res = await send('/fill', 'POST', { selector, text });
+        const data = JSON.parse(res);
+        const status = data.verified ? '✓ verified' : '✗ not verified';
+        console.log('Filled', selector, `(${status})`);
       } catch (error) {
         console.error('Error filling field:', error);
       }

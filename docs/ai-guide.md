@@ -4,6 +4,24 @@ Esta guía está pensada para **agentes de inteligencia artificial** (LLMs) que 
 
 ---
 
+## ⚠️ Regla de oro: Usa subagentes para tareas complejas
+
+No ejecutes secuencias largas de `br` directamente en el contexto principal.
+**Delega siempre la navegación web a un subagente** para reducir el consumo de tokens.
+
+**Patrón correcto:**
+1. Recibes la tarea (ej: "compra en Mercadona")
+2. Lanzas un subagente con la herramienta `task`
+3. El subagente ejecuta toda la secuencia de `br` (goto, observe, yclick, etc.)
+4. El subagente devuelve solo el resultado final (productos, precios, total)
+5. Le presentas el resultado al usuario
+
+**NUNCA** ejecutes más de 5-6 comandos `br` directamente en el contexto principal.
+Cada comando + su output ocupa tokens que se acumulan. Un subagente absorbe todo ese
+tráfico y solo devuelve lo esencial.
+
+---
+
 ## Principio fundamental: Lee antes de actuar
 
 Nunca te apresures a hacer clics o rellenar formularios sin antes entender la página. La web es impredecible: puede tener popups, cambios de layout, elementos que se cargan tarde, etc.

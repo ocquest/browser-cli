@@ -16,6 +16,22 @@
 
 https://www.npmjs.com/package/@browsemake/browser-cli
 
+## ⚠️ Vital: Usa subagentes para ahorrar tokens
+
+Las sesiones largas con múltiples interacciones consumen muchos tokens de contexto.
+**Es crítico delegar tareas complejas a subagentes** para mantener el contexto principal
+ligero. El patrón recomendado:
+
+```
+1. El agente principal recibe la tarea del usuario
+2. El agente principal lanza un subagente que ejecuta la secuencia de comandos br
+3. El subagente completa toda la navegación y devuelve solo el resultado final
+4. El agente principal presenta el resultado y queda disponible para la siguiente tarea
+```
+
+Esto reduce drásticamente el uso de tokens y evita que la ventana de contexto se sature
+con el historial de navegación. Usa la herramienta `task` para lanzar subagentes.
+
 ## Why Broswer CLI?
 - **Just works**: simply browser automation, coding not required, leave the rest workflow to the most powerful LLM agent
 - **AI first**: designed for LLM agent, readable view from HTML, and error hint
