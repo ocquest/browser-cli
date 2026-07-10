@@ -4,9 +4,10 @@ function register(server, browser) {
   _browser = browser;
 
   server.registerResource(
+    'browser-status',
     'browser://status',
     {
-      name: 'browser-status',
+      title: 'Browser Status',
       description: 'Current page status: URL, title, scroll position, viewport, and detected modals',
       mimeType: 'application/json'
     },
@@ -21,9 +22,10 @@ function register(server, browser) {
   );
 
   server.registerResource(
+    'browser-html',
     'browser://html',
     {
-      name: 'browser-html',
+      title: 'Browser HTML',
       description: 'Full HTML source of the current page',
       mimeType: 'text/html'
     },
@@ -38,9 +40,10 @@ function register(server, browser) {
   );
 
   server.registerResource(
+    'browser-screenshot',
     'browser://screenshot',
     {
-      name: 'browser-screenshot',
+      title: 'Browser Screenshot',
       description: 'Full page screenshot as PNG',
       mimeType: 'image/png'
     },
@@ -61,9 +64,10 @@ function register(server, browser) {
   );
 
   server.registerResource(
+    'browser-observe',
     'browser://observe',
     {
-      name: 'browser-observe',
+      title: 'Browser Observe',
       description: 'Structured page snapshot: URL, title, viewport, interactive elements, visible text, and modals',
       mimeType: 'application/json'
     },
@@ -78,9 +82,10 @@ function register(server, browser) {
   );
 
   server.registerResource(
+    'browser-tabs',
     'browser://tabs',
     {
-      name: 'browser-tabs',
+      title: 'Browser Tabs',
       description: 'List of open tabs with index, title, URL, and active status',
       mimeType: 'application/json'
     },
