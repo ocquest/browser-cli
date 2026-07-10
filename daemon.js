@@ -38,7 +38,7 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
     headless: false,
     viewport: null,
     channel: 'chrome',
-    args: ['--start-fullscreen', '--disable-session-crashed-bubble', '--disable-features=SessionCrashedBubble', '--disable-automation', '--disable-blink-features=AutomationControlled'],
+    args: ['--start-fullscreen', '--disable-session-crashed-bubble', '--disable-features=SessionCrashedBubble,InfiniteSessionRestore', '--disable-automation', '--disable-blink-features=AutomationControlled'],
     ignoreDefaultArgs: ['--enable-automation'],
     proxy: proxyConfig.server ? { server: proxyConfig.server, username: proxyConfig.username, password: proxyConfig.password } : undefined
   };
