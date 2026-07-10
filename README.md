@@ -354,3 +354,69 @@ br start
 ```
 
 See [docs/usage.md](docs/usage.md) for full documentation.
+
+---
+
+## MCP Server (for AI coding tools)
+
+Use `browser-cli` as an **MCP server** directly from AI coding tools like **opencode**, **Claude Desktop**, **Cursor**, or **Claude Code**. The server exposes all browser automation capabilities as MCP tools, resources, and prompts.
+
+### Setup
+
+```jsonc
+// opencode.json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "browser-cli": {
+      "type": "local",
+      "command": ["node", "/path/to/browser-cli/mcp-server.js"],
+      "enabled": true
+    }
+  }
+}
+```
+
+### What you get
+
+Once configured, the AI can use all browser tools directly:
+
+| Tool | Purpose |
+|------|---------|
+| `browser-cli_browser_navigate` | Go to any URL |
+| `browser-cli_browser_observe` | Get page snapshot (interactive elements, text, modals) |
+| `browser-cli_browser_click` | Click elements via ydotool (undetectable) |
+| `browser-cli_browser_fill` | Fill form fields |
+| `browser-cli_browser_type` | Type text with human-like behavior |
+| `browser-cli_browser_screenshot` | Take page screenshots |
+| `browser-cli_browser_solve_slide_captcha` | Solve slide captchas |
+| `browser-cli_browser_evaluate` | Execute JavaScript |
+| `browser-cli_browser_view_tree` | Get DOM tree with IDs |
+| `browser-cli_browser_drag` | Drag & drop via ydotool |
+| And 20+ more... | |
+
+### Resources
+
+| URI | Description |
+|-----|-------------|
+| `browser://status` | Current page status (URL, title, scroll, modals) |
+| `browser://html` | Full page HTML |
+| `browser://screenshot` | Page screenshot (PNG) |
+| `browser://observe` | Structured page snapshot |
+| `browser://tabs` | Open tabs list |
+
+### CLI
+
+```bash
+# Start MCP server in stdio mode (for opencode, Claude Desktop)
+br mcp
+
+# Start MCP server in HTTP mode (for remote clients)
+br mcp --http --port 3031
+```
+
+### Requirements
+
+- Linux with Hyprland (for ydotool + hyprctl)
+- Chrome installed (`channel: 'chrome'`)
+- Node.js 18+

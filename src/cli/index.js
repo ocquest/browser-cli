@@ -15,6 +15,7 @@ require('./commands/history')(program);
 require('./commands/wait')(program);
 require('./commands/observe')(program);
 require('./commands/chain')(program);
+require('./commands/mcp')(program);
 
 const origHelp = program.helpInformation.bind(program);
 program.helpInformation = function () {

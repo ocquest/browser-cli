@@ -70,5 +70,24 @@ br start                                  # launches headful Chromium + Express 
 ## Test page
 `http://localhost:3030/test` — interactive page with buttons, inputs, drag-drop, event log.
 
+## MCP Server (for AI coding tools)
+
+The project includes an **MCP server** (`mcp-server.js`) that exposes all browser automation as MCP tools via stdio transport. Configure in your AI tool's `opencode.json`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "browser-cli": {
+      "type": "local",
+      "command": ["node", "/path/to/browser-cli/mcp-server.js"],
+      "enabled": true
+    }
+  }
+}
+```
+
+All tools are prefixed with `browser-cli_` (e.g. `browser-cli_browser_navigate`, `browser-cli_browser_click`). Resources are available at `browser://status`, `browser://html`, `browser://screenshot`, `browser://observe`, `browser://tabs`.
+
 ## AI agent guide
 See [docs/ai-guide.md](docs/ai-guide.md) for instructions on how AI agents should use `br` — read calmly, plan, then act.
