@@ -30,13 +30,12 @@ function getProxyConfig() {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
+const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
 
 (async () => {
-  // Clean user data dir to avoid "restore pages" prompt
-  try { fs.rmSync(tmpUserDataDir, { recursive: true, force: true }); } catch (_) {}
   const proxyConfig = getProxyConfig();
   const launchOptions = {
+    channel: 'chrome',
     headless: false,
     viewport: null,
     args: ['--start-fullscreen', '--disable-session-crashed-bubble', '--disable-features=SessionCrashedBubble', '--disable-automation', '--disable-blink-features=AutomationControlled'],
@@ -46,6 +45,59 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
   const context = await chromium.launchPersistentContext(tmpUserDataDir, launchOptions);
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+    // Auto-login Swagbucks via Google Sign-In
+    const GOOGLE_SELECTORS = [
+      '[data-test="google-signin"]', '[data-testid="google-signin"]',
+      '.google-signin-btn', '.S9gUrf-YoZ4jf', /* GIS container */
+      'button[class*="google"]', '[class*="google"][class*="btn"]',
+      '[aria-label*="Google" i]',
+    ];
+
+    function tryClick(el) {
+      if (el && el.offsetParent !== null && el.getBoundingClientRect().width > 0) {
+        if (el.tagName === 'IFRAME') {
+          // GIS iframe — click center
+          const rect = el.getBoundingClientRect();
+          el.dispatchEvent(new MouseEvent('click', {
+            bubbles: true, cancelable: true,
+            clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2,
+            view: window,
+          }));
+        } else {
+          el.click();
+        }
+        return true;
+      }
+      return false;
+    }
+
+    function tryGoogleSignIn() {
+      if (!window.location.hostname.includes('swagbucks.com')) return false;
+      for (const sel of GOOGLE_SELECTORS) {
+        const el = document.querySelector(sel);
+        if (tryClick(el)) return true;
+      }
+      // GIS iframe fallback: <iframe src*="accounts.google.com/gsi/"
+      const iframes = document.querySelectorAll('iframe[src*="accounts.google.com"]');
+      for (const f of iframes) {
+        if (tryClick(f)) return true;
+      }
+      return false;
+    }
+
+    window.addEventListener('load', () => { setTimeout(tryGoogleSignIn, 2000); });
+
+    const observer = new MutationObserver(() => {
+      if (window.location.hostname.includes('swagbucks.com')) tryGoogleSignIn();
+    });
+    if (document.body) {
+      observer.observe(document.body, { childList: true, subtree: true });
+    } else {
+      document.addEventListener('DOMContentLoaded', () => {
+        observer.observe(document.body, { childList: true, subtree: true });
+      });
+    }
   });
   const browser = await context.browser();
   let pages = [];
@@ -61,6 +113,49 @@ const tmpUserDataDir = path.join(os.tmpdir(), 'br_user_data');
       await execAsync('hyprctl dispatch focuswindow class:Chromium-browser');
     } catch (_) {}
   }, 1000);
+
+  // Auto-login Swagbucks al arrancar
+  (async () => {
+    try {
+      await initialPage.goto('https://www.swagbucks.com/p/login?lang=es&rloc=%2Fg%2Fpaid-surveys%3Flang%3Des', { timeout: 30000, waitUntil: 'networkidle' });
+      await new Promise(r => setTimeout(r, 3000));
+
+      for (let attempt = 0; attempt < 15; attempt++) {
+        const clicked = await initialPage.evaluate(() => {
+          const s = [
+            '[data-test="google-signin"]', '[data-testid="google-signin"]',
+            '.google-signin-btn', '.S9gUrf-YoZ4jf',
+            'button[class*="google"]', '[aria-label*="Google" i]',
+            'iframe[src*="accounts.google.com"]',
+          ];
+          for (const sel of s) {
+            const el = document.querySelector(sel);
+            if (el && el.offsetParent !== null && el.getBoundingClientRect().width > 0) {
+              if (el.tagName === 'IFRAME') {
+                const r = el.getBoundingClientRect();
+                el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, view: window }));
+              } else { el.click(); }
+              return sel;
+            }
+          }
+          return null;
+        });
+        if (clicked) {
+          console.log('[br] Auto-login OK:', clicked);
+          await new Promise(r => setTimeout(r, 5000));
+          break;
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+
+      // Si el login tuvo exito, volvemos a pagina en blanco
+      if (initialPage.url().includes('swagbucks.com')) {
+        console.log('[br] Auto-login: sesion activa en', initialPage.url());
+      }
+    } catch (e) {
+      console.log('[br] Auto-login: no requiere login o error:', e.message);
+    }
+  })();
 
   function getActivePage() {
     return activePage;
