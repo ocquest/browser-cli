@@ -35,14 +35,15 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
 (async () => {
   const proxyConfig = getProxyConfig();
   const launchOptions = {
-    channel: 'chrome',
     headless: false,
     viewport: null,
+    channel: 'chrome',
     args: ['--start-fullscreen', '--disable-session-crashed-bubble', '--disable-features=SessionCrashedBubble', '--disable-automation', '--disable-blink-features=AutomationControlled'],
     ignoreDefaultArgs: ['--enable-automation'],
     proxy: proxyConfig.server ? { server: proxyConfig.server, username: proxyConfig.username, password: proxyConfig.password } : undefined
   };
   const context = await chromium.launchPersistentContext(tmpUserDataDir, launchOptions);
+  console.log('[DBG] Chrome version:', (await context.browser()).version());
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 
@@ -114,46 +115,40 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
     } catch (_) {}
   }, 1000);
 
-  // Auto-login Swagbucks al arrancar
+  // Auto-login + navegar a encuestas
   (async () => {
     try {
-      await initialPage.goto('https://www.swagbucks.com/p/login?lang=es&rloc=%2Fg%2Fpaid-surveys%3Flang%3Des', { timeout: 30000, waitUntil: 'networkidle' });
-      await new Promise(r => setTimeout(r, 3000));
-
-      for (let attempt = 0; attempt < 15; attempt++) {
-        const clicked = await initialPage.evaluate(() => {
-          const s = [
-            '[data-test="google-signin"]', '[data-testid="google-signin"]',
-            '.google-signin-btn', '.S9gUrf-YoZ4jf',
-            'button[class*="google"]', '[aria-label*="Google" i]',
-            'iframe[src*="accounts.google.com"]',
-          ];
-          for (const sel of s) {
-            const el = document.querySelector(sel);
-            if (el && el.offsetParent !== null && el.getBoundingClientRect().width > 0) {
-              if (el.tagName === 'IFRAME') {
-                const r = el.getBoundingClientRect();
-                el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, view: window }));
-              } else { el.click(); }
-              return sel;
+      if (initialPage.url() === 'about:blank') {
+        await initialPage.goto('https://www.swagbucks.com/p/login?lang=es&rloc=%2Fg%2Fpaid-surveys%3Flang%3Des', { timeout: 15000, waitUntil: 'load' }).catch(() => {});
+        await sleep(2000);
+        for (let attempt = 0; attempt < 8; attempt++) {
+          const clicked = await initialPage.evaluate(() => {
+            for (const sel of ['[data-test="google-signin"]', '[data-testid="google-signin"]', '.google-signin-btn', '.S9gUrf-YoZ4jf', 'button[class*="google"]', '[aria-label*="Google" i]']) {
+              const el = document.querySelector(sel);
+              if (el && el.offsetParent !== null && el.getBoundingClientRect().width > 0) { el.click(); return sel; }
             }
-          }
-          return null;
-        });
-        if (clicked) {
-          console.log('[br] Auto-login OK:', clicked);
-          await new Promise(r => setTimeout(r, 5000));
-          break;
+            for (const f of document.querySelectorAll('iframe[src*="accounts.google.com"]')) {
+              const r = f.getBoundingClientRect();
+              if (r.width > 0) { f.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, view: window })); return 'iframe'; }
+            }
+            return null;
+          }).catch(() => null);
+          if (clicked) { console.log('[br] Auto-login OK:', clicked); await sleep(3000); break; }
+          await sleep(1000);
         }
-        await new Promise(r => setTimeout(r, 1000));
-      }
-
-      // Si el login tuvo exito, volvemos a pagina en blanco
-      if (initialPage.url().includes('swagbucks.com')) {
-        console.log('[br] Auto-login: sesion activa en', initialPage.url());
+        ready = true;
+        console.log('[br] Ready');
+        await sleep(3000);
+        await initialPage.goto('https://www.swagbucks.com/surveys?lang=es', { timeout: 15000, waitUntil: 'load' }).catch(() => {});
+        console.log('[br] At surveys:', await initialPage.evaluate('location.href').catch(() => '?'));
+      } else {
+        ready = true;
+        console.log('[br] Ready (already on page)');
       }
     } catch (e) {
-      console.log('[br] Auto-login: no requiere login o error:', e.message);
+      console.log('[br] Auto-login error:', e.message);
+      ready = true;
+      console.log('[br] Ready (after error)');
     }
   })();
 
@@ -175,11 +170,6 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
     }
   });
 
-  context.on('close', () => {
-    // Handle context close if necessary, e.g., clean up resources
-    console.log('Browser context closed.');
-  });
-
   browser.on('disconnected', () => {
     console.log('Browser disconnected. Exiting daemon.');
     process.exit(0);
@@ -196,11 +186,18 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
 
 
 
+  let ready = false;
+
   const app = express();
   app.use(express.json());
 
   app.get('/health', (req, res) => {
     res.send('ok');
+  });
+
+  app.get('/ready', (req, res) => {
+    if (ready) return res.send('ok');
+    res.status(503).send('not ready');
   });
 
   app.get('/screenshot', async (req, res) => {
