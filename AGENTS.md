@@ -48,7 +48,6 @@ br start                                  # launches headful Chromium + Express 
 | `br scrollIntoView <selector>` / `br scrollTo <pct>` / `br nextChunk` / `br prevChunk` | scrolling |
 | `br history` / `br clear-history` | action history |
 | `br llm <prompt>` | send text prompt to configured LLM |
-| `br solve-slide-captcha` | attempt to solve a slide captcha using LLM vision + ydotool drag |
 | `br start --api-key <key>` | start daemon with LLM API key (also via `BR_LLM_API_KEY` env var) |
 
 `selectorOrId` params accept either a CSS selector **or** a numeric node ID from `view-tree`. The daemon resolves IDs to XPath internally.
@@ -88,6 +87,32 @@ The project includes an **MCP server** (`mcp-server.js`) that exposes all browse
 ```
 
 All tools are prefixed with `browser-cli_` (e.g. `browser-cli_browser_navigate`, `browser-cli_browser_click`). Resources are available at `browser://status`, `browser://html`, `browser://screenshot`, `browser://observe`, `browser://tabs`.
+
+### Site Profiles (per-domain custom tools)
+Custom tool definitions stored in `~/.config/browser-cli/profiles/<domain>.json`. Each tool is a chain with `{{input}}` placeholders.
+
+```bash
+# Create a tool for mercadona.es
+browser_profile_create(
+  domain:"mercadona.es",
+  name:"add-to-cart",
+  description:"Add product to cart: click product → Escape → add → Escape",
+  steps:"click {{product}} | press Escape | click Añadir al carro | press Escape",
+  inputs:[{name:"product",description:"Product element ID or selector"}]
+)
+
+# List tools for current domain
+browser_profile_list()
+
+# Run a tool
+browser_profile_run(name:"add-to-cart", inputs:{product:"15"})
+
+# Edit/delete
+browser_profile_edit(domain:"mercadona.es", name:"add-to-cart", field:"steps", value:"click {{product}} | click Añadir")
+browser_profile_delete(domain:"mercadona.es", name:"add-to-cart")
+```
+
+Run `browser_help(topic:"profiles")` for full documentation.
 
 ## AI agent guide
 See [docs/ai-guide.md](docs/ai-guide.md) for instructions on how AI agents should use `br` — read calmly, plan, then act.

@@ -10,7 +10,6 @@ require('./commands/tabs')(program);
 require('./commands/javascript')(program);
 require('./commands/fullscreen')(program);
 require('./commands/llm')(program);
-require('./commands/captcha')(program);
 require('./commands/history')(program);
 require('./commands/wait')(program);
 require('./commands/observe')(program);

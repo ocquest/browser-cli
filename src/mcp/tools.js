@@ -4,12 +4,30 @@ const ydotool = require('../daemon/services/ydotool');
 const util = require('util');
 const execAsync = util.promisify(require('child_process').exec);
 const llm = require('../../lib/llm');
+const profiles = require('./profiles');
 
 let _browser;
 
 const z = require('zod').z;
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function enrich(page, data) {
+  try {
+    const url = (page && page.url()) || (data && data.url);
+    if (url) {
+      data.url = url;
+      const domain = profiles.getDomainFromUrl(url);
+      const tools = profiles.loadTools(domain);
+      data.profiles = tools.map(t => ({ name: t.name, description: t.description, inputs: t.inputs }));
+    } else {
+      data.profiles = [];
+    }
+  } catch {
+    data.profiles = [];
+  }
+  return { content: [{ type: 'text', text: JSON.stringify(data) }] };
+}
 
 async function captureDiff() {
   const page = _browser.getActivePage();
@@ -22,6 +40,100 @@ async function captureDiff() {
       return _browser.diffInteractiveState(before, a);
     }
   };
+}
+
+async function execChainSteps(page, stepsStr) {
+  const parsedSteps = stepsStr.split('|').map(s => s.trim()).filter(Boolean).map(s => {
+    const parts = s.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+    const action = parts[0];
+    const rawArgs = parts.slice(1).map(a => a.replace(/^"(.*)"$/, '$1'));
+    const flags = {};
+    const args = rawArgs.filter(a => {
+      if (a === '--submit') { flags.submit = true; return false; }
+      if (a === '--precise') { flags.precise = true; return false; }
+      if (a.startsWith('--')) return false;
+      return true;
+    });
+    if (action === 'observe') {
+      if (rawArgs.includes('minimal') || rawArgs.includes('--minimal')) flags.mode = 'minimal';
+      if (rawArgs.includes('full') || rawArgs.includes('--full')) flags.mode = 'full';
+    }
+    return { action, args, flags };
+  });
+  const results = [];
+  for (const step of parsedSteps) {
+    const { action, args, flags } = step;
+    const entry = { action, args: [...args], flags };
+    try {
+      switch (action) {
+        case 'goto': await page.goto(args[0], { timeout: 30000 }); break;
+        case 'fill': {
+          const { element } = await _browser.findElement(args[0]);
+          await element.fill(args.slice(1).join(' '));
+          if (flags.submit) await page.keyboard.press('Enter');
+          break;
+        }
+        case 'press': await page.keyboard.press(args[0]); entry.key = args[0]; break;
+        case 'click': {
+          const { element } = await _browser.findElement(args[0]);
+          await element.click();
+          break;
+        }
+        case 'yclick':
+          await _browser.ensureClickable(args[0]);
+          const ypos = await _browser.getElementScreenPos(args[0]);
+          await hyprctl.focusChromiumWindow();
+          await sleep(50);
+          await ydotool.naturalMouseMove(ypos.screenX, ypos.screenY, hyprctl.getCursorPos);
+          await sleep(60 + Math.round(Math.random() * 30));
+          await execAsync('ydotool click C0');
+          entry.x = ypos.screenX; entry.y = ypos.screenY;
+          break;
+        case 'type': {
+          const { element } = await _browser.findElement(args[0]);
+          await element.evaluate(el => { el.value = ''; el.focus(); });
+          const typeText = args.slice(1).join(' ');
+          if (flags.precise) { for (const ch of typeText) { await page.keyboard.type(ch); await sleep(10 + Math.random() * 20); } }
+          else { await _browser.humanType(page, args[0], typeText); }
+          if (flags.submit) await page.keyboard.press('Enter');
+          break;
+        }
+        case 'eval': entry.result = String(await page.evaluate(args.join(' '))).substring(0, 500); break;
+        case 'wait':
+          if (args[0] === 'networkidle') await page.waitForLoadState('networkidle', { timeout: 30000 });
+          else if (args[0] === 'stable') await _browser.waitForStableDOM(5000);
+          else if (args[0] === 'selector' && args[1]) await page.waitForSelector(args[1], { timeout: 30000 });
+          else await sleep(parseInt(args[0]) || 1000);
+          break;
+        case 'observe': entry.observe = await _browser.observe(page, { mode: flags.mode || 'normal' }); break;
+        case 'screenshot': entry.screenshotBase64 = (await page.screenshot({ type: 'png' })).toString('base64'); break;
+        case 'scrollIntoView': { const { element } = await _browser.findElement(args[0]); if (element) await element.scrollIntoViewIfNeeded(); } break;
+        case 'scrollTo': await page.evaluate((pct) => window.scrollTo(0, document.body.scrollHeight * parseInt(pct) / 100), args[0]); break;
+        case 'scrollNext': await page.evaluate(() => window.scrollBy(0, window.innerHeight)); break;
+        case 'scrollPrev': await page.evaluate(() => window.scrollBy(0, -window.innerHeight)); break;
+        case 'ydrag':
+          const dFromPos = await _browser.getElementScreenPos(args[0]);
+          const dToPos = await _browser.getElementScreenPos(args[1]);
+          await hyprctl.focusChromiumWindow();
+          await sleep(50);
+          await ydotool.naturalMouseMove(dFromPos.screenX, dFromPos.screenY, hyprctl.getCursorPos);
+          await sleep(80);
+          await execAsync('ydotool click 0x40');
+          await sleep(120);
+          await ydotool.naturalMouseMove(dToPos.screenX, dToPos.screenY, hyprctl.getCursorPos);
+          await sleep(80);
+          await execAsync('ydotool click 0x80');
+          entry.fromX = dFromPos.screenX; entry.fromY = dFromPos.screenY;
+          entry.toX = dToPos.screenX; entry.toY = dToPos.screenY;
+          break;
+        default: throw new Error('Unknown action: ' + action);
+      }
+    } catch (e) {
+      entry.error = e.message;
+    }
+    results.push(entry);
+  }
+  return results;
 }
 
 const CALIBRATION_HTML = `<!DOCTYPE html>
@@ -82,7 +194,7 @@ function register(server, browser) {
       state.record('navigate', { url });
       const info = await browser.getPageInfo(page);
       const changed = await diff.after();
-      return { content: [{ type: 'text', text: JSON.stringify({ ...info, changed }) }] };
+      return enrich(page, { ...info, changed });
     }
   );
 
@@ -98,7 +210,7 @@ function register(server, browser) {
       await page.goBack();
       state.record('go-back');
       const changed = await diff.after();
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, action: 'go-back', changed }) }] };
+      return enrich(page, { ok: true, action: 'go-back', changed });
     }
   );
 
@@ -114,7 +226,7 @@ function register(server, browser) {
       await page.goForward();
       state.record('go-forward');
       const changed = await diff.after();
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, action: 'go-forward', changed }) }] };
+      return enrich(page, { ok: true, action: 'go-forward', changed });
     }
   );
 
@@ -130,7 +242,7 @@ function register(server, browser) {
       await page.reload();
       state.record('reload');
       const changed = await diff.after();
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, action: 'reload', changed }) }] };
+      return enrich(page, { ok: true, action: 'reload', changed });
     }
   );
 
@@ -153,13 +265,13 @@ function register(server, browser) {
       await ydotool.naturalMouseMove(pos.screenX, pos.screenY, hyprctl.getCursorPos);
       await sleep(60 + Math.round(Math.random() * 30));
       await execAsync('ydotool click C0');
+      const clickPage = browser.getActivePage();
       if (wait_until === 'networkidle') {
-        const page = browser.getActivePage();
-        await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+        await clickPage.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
       }
       state.record('yclick', { selector, x: pos.screenX, y: pos.screenY });
       const changed = await diff.after();
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, x: pos.screenX, y: pos.screenY, changed }) }] };
+      return enrich(clickPage, { ok: true, x: pos.screenX, y: pos.screenY, changed });
     }
   );
 
@@ -185,7 +297,7 @@ function register(server, browser) {
       }
       state.record('click', { selector });
       const changed = await diff.after();
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, changed }) }] };
+      return enrich(page, { ok: true, changed });
     }
   );
 
@@ -213,7 +325,7 @@ function register(server, browser) {
       await execAsync('ydotool click 0x80');
       state.record('ydrag', { from, to });
       const changed = await diff.after();
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, changed }) }] };
+      return enrich(browser.getActivePage(), { ok: true, changed });
     }
   );
 
@@ -239,7 +351,7 @@ function register(server, browser) {
       if (submit) await page.keyboard.press('Enter');
       state.record('fill', { selector, submit: !!submit });
       const changed = await diff.after();
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, submit, changed }) }] };
+      return enrich(page, { ok: true, submit, changed });
     }
   );
 
@@ -259,7 +371,7 @@ function register(server, browser) {
       state.addSecret(secret);
       state.record('fill-secret', { selector });
       const changed = await diff.after();
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, changed }) }] };
+      return enrich(page, { ok: true, changed });
     }
   );
 
@@ -291,7 +403,7 @@ function register(server, browser) {
       if (submit) await page.keyboard.press('Enter');
       state.record('type', { selector, precise: !!precise, submit: !!submit });
       const changed = await diff.after();
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, changed }) }] };
+      return enrich(page, { ok: true, changed });
     }
   );
 
@@ -311,7 +423,7 @@ function register(server, browser) {
       await page.keyboard.press(key);
       state.record('press', { key });
       const changed = await diff.after();
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, key, changed }) }] };
+      return enrich(page, { ok: true, key, changed });
     }
   );
 
@@ -341,7 +453,7 @@ function register(server, browser) {
       }
       state.record('select', { selector, value });
       const changed = await diff.after();
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, changed }) }] };
+      return enrich(page, { ok: true, changed });
     }
   );
 
@@ -360,7 +472,7 @@ function register(server, browser) {
       const page = browser.getActivePage();
       const result = await browser.observe(page, { mode, maxChars, maxInteractive });
       state.record('observe', { mode });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return enrich(page, result);
     }
   );
 
@@ -381,7 +493,7 @@ function register(server, browser) {
       const page = browser.getActivePage();
       const treeText = await browser.viewTree(page, { role, tag, match, maxDepth: max_depth, section, onlyMatches: only_matches });
       state.record('view-tree', { role, tag, match, maxDepth: max_depth, section });
-      return { content: [{ type: 'text', text: treeText }] };
+      return enrich(page, { tree: treeText });
     }
   );
 
@@ -467,7 +579,7 @@ function register(server, browser) {
     async () => {
       const page = browser.getActivePage();
       const info = await browser.getPageInfo(page);
-      return { content: [{ type: 'text', text: JSON.stringify(info) }] };
+      return enrich(page, info);
     }
   );
 
@@ -484,7 +596,7 @@ function register(server, browser) {
       const page = browser.getActivePage();
       const result = await browser.snapshot(page, selector);
       state.record('snapshot', { selector, count: result.itemCount });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return enrich(page, result);
     }
   );
 
@@ -497,74 +609,138 @@ function register(server, browser) {
     async () => {
       const result = await browser.diff();
       state.record('diff');
-      return { content: [{ type: 'text', text: JSON.stringify(result.changes) }] };
+      return enrich(browser.getActivePage(), { changes: result.changes });
+    }
+  );
+
+  // ── Site Profiles ─────────────────────────────────────────
+  function replacePlaceholders(template, inputs) {
+    return template.replace(/\{\{(\w+)\}\}/g, (_, key) => inputs[key] !== undefined ? String(inputs[key]) : '{{' + key + '}}');
+  }
+
+  server.registerTool(
+    'browser_profile_create',
+    {
+      description: 'Create a reusable custom tool for a specific website. Define steps (pipe-delimited chain commands) with {{input_name}} placeholders. Steps run in sequence via browser_chain. Stored per domain in ~/.config/browser-cli/profiles/.',
+      inputSchema: z.object({
+        domain: z.string().describe('Domain or URL (e.g., "mercadona.es" or "https://mercadona.es")'),
+        name: z.string().describe('Tool name (e.g., "add-to-cart", "search-product")'),
+        description: z.string().describe('Description the AI will see when using this tool'),
+        steps: z.string().describe('Pipe-delimited chain steps. Use {{input}} for variables. E.g.: "click {{product}} | press Escape | click 7 | press Escape"'),
+        inputs: z.array(z.object({
+          name: z.string().describe('Input variable name (without {{}} )'),
+          type: z.string().optional().default('string').describe('Type hint: string, number, boolean'),
+          description: z.string().optional().describe('Description of this input')
+        })).optional().default([]).describe('List of input variables used in steps')
+      })
+    },
+    async ({ domain, name, description, steps, inputs }) => {
+      const domainKey = profiles.getDomainFromUrl(domain);
+      const tools = profiles.loadTools(domainKey);
+      if (tools.some(t => t.name === name)) throw new Error(`Tool "${name}" already exists for ${domainKey}. Use browser_profile_edit to modify it.`);
+      tools.push({ name, description, steps, inputs, created: new Date().toISOString() });
+      profiles.saveTools(domainKey, tools);
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, domain: domainKey, name, toolCount: tools.length }) }] };
     }
   );
 
   server.registerTool(
-    'browser_add_to_cart',
+    'browser_profile_list',
     {
-      description: 'COMPOSITE: Add product to cart in one call. Flow: click product → Escape (close zoom overlay) → auto-detect "Add to cart" button → click → Escape (close confirmation). Provide product_selector (numeric ID from observe). Optionally provide add_selector and confirm_selector if auto-detection fails. Saves 3-4 tool calls per product.',
+      description: 'List custom tools defined for the current page domain (or a specific domain). Each tool shows name, description, inputs, and steps.',
       inputSchema: z.object({
-        product_selector: z.string().describe('CSS selector or numeric ID of the product to add'),
-        add_selector: z.string().optional().describe('CSS selector or numeric ID of the "Add to cart" button (auto-detected if not provided)'),
-        confirm_selector: z.string().optional().describe('CSS selector or numeric ID to close confirmation dialog (auto-detected if not provided)')
+        domain: z.string().optional().describe('Domain to list tools for. Omit to auto-detect from current page URL.')
       })
     },
-    async ({ product_selector, add_selector, confirm_selector }) => {
-      const page = browser.getActivePage();
-      const results = [];
-
-      const clickEl = async (sel) => {
-        const { element } = await browser.findElement(sel);
-        if (!element) throw new Error('Element not found: ' + sel);
-        await element.click();
-        results.push('clicked ' + sel);
+    async ({ domain }) => {
+      const page = _browser.getActivePage();
+      const targetDomain = domain ? profiles.getDomainFromUrl(domain) : (page ? profiles.getDomainFromUrl(page.url()) : '');
+      if (!targetDomain) throw new Error('No domain specified and no active page to detect domain');
+      const tools = profiles.loadTools(targetDomain);
+      const allDomains = profiles.listDomains();
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          domain: targetDomain,
+          toolCount: tools.length,
+          tools: tools.map(t => ({ name: t.name, description: t.description, inputs: t.inputs, steps: t.steps })),
+          allDomains
+        }) }]
       };
+    }
+  );
 
-      const pressEscape = async () => {
-        await page.keyboard.press('Escape');
-        await sleep(300);
-        results.push('pressed Escape');
-      };
-
-      const autoClickAdd = async () => {
-        const addTexts = ['añadir al carro', 'add to cart', 'añadir', 'comprar', 'add'];
-        for (const text of addTexts) {
-          const found = await page.evaluate((t) => {
-            const btns = document.querySelectorAll('button, a[role="button"], [role="button"]');
-            for (const btn of btns) {
-              if (btn.textContent.trim().toLowerCase().includes(t)) {
-                btn.click();
-                return btn.textContent.trim().substring(0, 60);
-              }
-            }
-            return null;
-          }, text);
-          if (found) { results.push('auto-add: "' + found + '"'); return; }
-        }
-        throw new Error('Could not find "Add to cart" button automatically. Provide add_selector.');
-      };
-
-      await clickEl(product_selector);
-      await sleep(800);
-      await pressEscape();
-      await sleep(400);
-      if (add_selector) {
-        await clickEl(add_selector);
+  server.registerTool(
+    'browser_profile_edit',
+    {
+      description: 'Edit a custom tool for a domain: rename, change steps, update description, or modify inputs. Specify which field to change.',
+      inputSchema: z.object({
+        domain: z.string().describe('Domain or URL'),
+        name: z.string().describe('Current tool name'),
+        field: z.enum(['name', 'description', 'steps', 'inputs']).describe('Field to edit: name, description, steps, or inputs'),
+        value: z.any().describe('New value for the field')
+      })
+    },
+    async ({ domain, name, field, value }) => {
+      const domainKey = profiles.getDomainFromUrl(domain);
+      const tools = profiles.loadTools(domainKey);
+      const idx = tools.findIndex(t => t.name === name);
+      if (idx === -1) throw new Error(`Tool "${name}" not found for ${domainKey}`);
+      if (field === 'inputs') {
+        tools[idx].inputs = value;
       } else {
-        await autoClickAdd();
+        tools[idx][field] = String(value);
       }
-      await sleep(600);
-      if (confirm_selector) {
-        await clickEl(confirm_selector);
-      } else {
-        await pressEscape();
-      }
-      await sleep(300);
+      profiles.saveTools(domainKey, tools);
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, domain: domainKey, name, field, toolCount: tools.length }) }] };
+    }
+  );
 
-      state.record('add-to-cart', { product_selector, results });
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, steps: results, product_selector }) }] };
+  server.registerTool(
+    'browser_profile_delete',
+    {
+      description: 'Delete a custom tool from a domain profile.',
+      inputSchema: z.object({
+        domain: z.string().describe('Domain or URL'),
+        name: z.string().describe('Tool name to delete')
+      })
+    },
+    async ({ domain, name }) => {
+      const domainKey = profiles.getDomainFromUrl(domain);
+      const tools = profiles.loadTools(domainKey);
+      const idx = tools.findIndex(t => t.name === name);
+      if (idx === -1) throw new Error(`Tool "${name}" not found for ${domainKey}`);
+      tools.splice(idx, 1);
+      profiles.saveTools(domainKey, tools);
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, domain: domainKey, deleted: name, toolCount: tools.length }) }] };
+    }
+  );
+
+  server.registerTool(
+    'browser_profile_run',
+    {
+      description: 'Execute a custom tool defined via browser_profile_create for the current domain. Replaces {{inputs}} and runs the chain steps. Returns the observe result after execution.',
+      inputSchema: z.object({
+        name: z.string().describe('Tool name to run (e.g., "add-to-cart")'),
+        domain: z.string().optional().describe('Domain or URL. Omit to auto-detect from current page.'),
+        inputs: z.record(z.string(), z.string()).optional().default({}).describe('Input values to replace {{placeholders}} in steps. E.g.: {"product":"15", "quantity":"2"}')
+      })
+    },
+    async ({ name, domain, inputs }) => {
+      const page = _browser.getActivePage();
+      if (!page) throw new Error('No active page');
+      const targetDomain = domain ? profiles.getDomainFromUrl(domain) : profiles.getDomainFromUrl(page.url());
+      const tools = profiles.loadTools(targetDomain);
+      const tool = tools.find(t => t.name === name);
+      if (!tool) throw new Error(`Tool "${name}" not found for ${targetDomain}. Use browser_profile_list to see available tools.`);
+      let steps = tool.steps;
+      for (const [key, val] of Object.entries(inputs || {})) {
+        steps = steps.replace(new RegExp('\\{\\{' + key + '\\}\\}', 'g'), String(val));
+      }
+      const pageBefore = await _browser.captureInteractiveState(page).catch(() => null);
+      const chainResult = await execChainSteps(page, steps);
+      const pageAfter = await _browser.captureInteractiveState(page).catch(() => null);
+      const changed = _browser.diffInteractiveState(pageBefore, pageAfter);
+      return enrich(page, { ok: true, domain: targetDomain, tool: name, changed, steps: chainResult });
     }
   );
 
@@ -580,7 +756,7 @@ function register(server, browser) {
     async ({ selector, timeout }) => {
       await browser.waitForElement(selector, timeout);
       state.record('wait-for', { selector, timeout });
-      return { content: [{ type: 'text', text: `Element "${selector}" appeared` }] };
+      return enrich(browser.getActivePage(), { ok: true, action: 'wait-for', selector });
     }
   );
 
@@ -599,7 +775,7 @@ function register(server, browser) {
     async ({ conditions, timeout }) => {
       const result = await browser.waitForAny(conditions, timeout);
       state.record('wait-for-any', { count: conditions.length, result: result.type });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return enrich(browser.getActivePage(), result);
     }
   );
 
@@ -614,7 +790,7 @@ function register(server, browser) {
     async ({ selector }) => {
       await browser.hover(selector);
       state.record('hover', { selector });
-      return { content: [{ type: 'text', text: 'ok' }] };
+      return enrich(browser.getActivePage(), { ok: true });
     }
   );
 
@@ -654,7 +830,7 @@ function register(server, browser) {
         return matches.slice(0, 50);
       }, query);
       state.record('find-text', { query, count: results.length });
-      return { content: [{ type: 'text', text: JSON.stringify({ query, count: results.length, results }) }] };
+      return enrich(page, { query, count: results.length, results });
     }
   );
 
@@ -669,7 +845,7 @@ function register(server, browser) {
       const page = browser.getActivePage();
       const { element } = await browser.findElement(selector);
       if (element) await element.scrollIntoViewIfNeeded();
-      return { content: [{ type: 'text', text: 'ok' }] };
+      return enrich(page, { ok: true, action: 'scroll-into-view' });
     }
   );
 
@@ -683,7 +859,7 @@ function register(server, browser) {
       const page = browser.getActivePage();
       const pct = Math.max(0, Math.min(100, percentage));
       await page.evaluate((p) => window.scrollTo(0, document.body.scrollHeight * p / 100), pct);
-      return { content: [{ type: 'text', text: `Scrolled to ${pct}%` }] };
+      return enrich(page, { ok: true, scrolledTo: `${percentage}%` });
     }
   );
 
@@ -696,7 +872,7 @@ function register(server, browser) {
     async () => {
       const page = browser.getActivePage();
       await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-      return { content: [{ type: 'text', text: 'ok' }] };
+      return enrich(page, { ok: true, action: 'scroll-next' });
     }
   );
 
@@ -709,20 +885,20 @@ function register(server, browser) {
     async () => {
       const page = browser.getActivePage();
       await page.evaluate(() => window.scrollBy(0, -window.innerHeight));
-      return { content: [{ type: 'text', text: 'ok' }] };
+      return enrich(page, { ok: true, action: 'scroll-prev' });
     }
   );
 
-  // ── Tabs ────────────────────────────────────────────────
+  // ── Tab Management ──────────────────────────────────────
   server.registerTool(
     'browser_list_tabs',
     {
-      description: 'List all open tabs with index, title, URL, and active status.',
+      description: 'List all open tabs with their titles and indices.',
       inputSchema: z.object({})
     },
     async () => {
-      const tabs = await browser.getTabInfo();
-      return { content: [{ type: 'text', text: JSON.stringify(tabs) }] };
+      const tabs = browser.listTabs();
+      return enrich(browser.getActivePage(), { tabs });
     }
   );
 
@@ -734,7 +910,7 @@ function register(server, browser) {
     },
     async ({ index }) => {
       await browser.switchTab(index);
-      return { content: [{ type: 'text', text: `Switched to tab ${index}` }] };
+      return enrich(browser.getActivePage(), { ok: true, action: 'switch-tab', index });
     }
   );
 
@@ -746,7 +922,8 @@ function register(server, browser) {
     },
     async ({ index }) => {
       await browser.closeTab(index);
-      return { content: [{ type: 'text', text: `Closed tab ${index}` }] };
+      const page = browser.getActivePage();
+      return enrich(page, { ok: true, action: 'close-tab', index });
     }
   );
 
@@ -761,7 +938,7 @@ function register(server, browser) {
       const page = browser.getActivePage();
       const result = await page.evaluate(code);
       state.record('evaluate');
-      return { content: [{ type: 'text', text: JSON.stringify({ result }) }] };
+      return enrich(page, { result });
     }
   );
 
@@ -784,7 +961,7 @@ function register(server, browser) {
       } else if (type === 'ms') {
         await sleep(ms || parseInt(arg) || 1000);
       }
-      return { content: [{ type: 'text', text: 'ok' }] };
+      return enrich(page, { ok: true, action: 'wait' });
     }
   );
 
@@ -797,7 +974,7 @@ function register(server, browser) {
     async () => {
       const page = browser.getActivePage();
       const isFullscreen = await page.evaluate(() => !!document.fullscreenElement);
-      if (isFullscreen) return { content: [{ type: 'text', text: 'Already fullscreen' }] };
+      if (isFullscreen) return enrich(page, { ok: true, fullscreen: true });
       const result = await page.evaluate(`document.documentElement.requestFullscreen().then(() => 'ok').catch(e => e.message)`);
       if (result !== 'ok') {
         await hyprctl.focusChromiumWindow();
@@ -805,7 +982,7 @@ function register(server, browser) {
         await page.keyboard.press('F11');
         await sleep(500);
       }
-      return { content: [{ type: 'text', text: 'Fullscreen toggled' }] };
+      return enrich(page, { ok: true, fullscreen: true });
     }
   );
 
@@ -877,7 +1054,7 @@ function register(server, browser) {
       state.setCalibrationOffset(newCalibrationOffset);
       state.record('calibrate', { windowPos, viewport, estimatedOffset: { x: estOffsetX, y: estOffsetY }, errors, avgErrX, avgErrY, calibrationOffset: newCalibrationOffset });
 
-      return { content: [{ type: 'text', text: JSON.stringify({ windowPos, viewport, estimatedOffset: { x: estOffsetX, y: estOffsetY }, errors, avgErrX, avgErrY, calibrationOffset: newCalibrationOffset }) }] };
+      return enrich(page, { windowPos, viewport, estimatedOffset: { x: estOffsetX, y: estOffsetY }, errors, avgErrX, avgErrY, calibrationOffset: newCalibrationOffset });
     }
   );
 
@@ -892,194 +1069,38 @@ function register(server, browser) {
     async ({ steps }) => {
       const page = browser.getActivePage();
       if (!page) throw new Error('No active page');
-      const parsedSteps = steps.split('|').map(s => s.trim()).filter(Boolean).map(s => {
-        const parts = s.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
-        const action = parts[0];
-        const rawArgs = parts.slice(1).map(a => a.replace(/^"(.*)"$/, '$1'));
-        const flags = {};
-        const args = rawArgs.filter(a => {
-          if (a === '--submit') { flags.submit = true; return false; }
-          if (a === '--precise') { flags.precise = true; return false; }
-          if (a.startsWith('--')) return false;
-          return true;
-        });
-        if (action === 'observe') {
-          if (rawArgs.includes('minimal') || rawArgs.includes('--minimal')) flags.mode = 'minimal';
-          if (rawArgs.includes('full') || rawArgs.includes('--full')) flags.mode = 'full';
-        }
-        return { action, args, flags };
-      });
-
-      if (!parsedSteps.length) throw new Error('no steps');
-
-      const stepResults = [];
-
-      const needsStableWait = async (action, args, flags) => {
-        if (action === 'goto') return true;
-        if (action === 'click') {
-          try {
-            const { element } = await browser.findElement(args[0]);
-            const tag = await element.evaluate(el => el.tagName.toLowerCase());
-            return tag === 'a';
-          } catch { return false; }
-        }
-        if ((action === 'fill' || action === 'type') && flags.submit) return true;
-        return false;
-      };
-
-      for (const step of parsedSteps) {
-        const { action, args, flags } = step;
-        const entry = { action, args: [...args], flags };
-        const willNavigate = await needsStableWait(action, args, flags).catch(() => false);
-        switch (action) {
-          case 'goto':
-            await page.goto(args[0], { timeout: 30000 });
-            break;
-          case 'fill': {
-            if (!args[0]) throw new Error('fill requires selector and text');
-            const { element } = await browser.findElement(args[0]);
-            await element.fill(args.slice(1).join(' '));
-            if (flags.submit) await page.keyboard.press('Enter');
-            break;
-          }
-          case 'press':
-            await page.keyboard.press(args[0]);
-            entry.key = args[0];
-            break;
-          case 'click': {
-            const { element } = await browser.findElement(args[0]);
-            await element.click();
-            break;
-          }
-          case 'yclick':
-            if (!args[0]) throw new Error('yclick requires a selector');
-            await browser.ensureClickable(args[0]);
-            const ypos = await browser.getElementScreenPos(args[0]);
-            await hyprctl.focusChromiumWindow();
-            await sleep(50);
-            await ydotool.naturalMouseMove(ypos.screenX, ypos.screenY, hyprctl.getCursorPos);
-            await sleep(60 + Math.round(Math.random() * 30));
-            await execAsync('ydotool click C0');
-            entry.x = ypos.screenX;
-            entry.y = ypos.screenY;
-            break;
-          case 'type': {
-            if (!args[0]) throw new Error('type requires selector and text');
-            const { element } = await browser.findElement(args[0]);
-            await element.evaluate(el => { el.value = ''; el.focus(); });
-            const typeText = args.slice(1).join(' ');
-            if (flags.precise) {
-              for (const ch of typeText) {
-                await page.keyboard.type(ch);
-                await sleep(browser.randInt(10, 30));
-              }
-            } else {
-              await browser.humanType(page, args[0], typeText);
-            }
-            if (flags.submit) await page.keyboard.press('Enter');
-            break;
-          }
-          case 'eval':
-            const evalCode = args.join(' ');
-            const evalResult = await page.evaluate(evalCode);
-            entry.result = typeof evalResult === 'object' ? JSON.stringify(evalResult).substring(0, 500) : String(evalResult).substring(0, 500);
-            break;
-          case 'wait':
-            if (args[0] === 'networkidle') {
-              await page.waitForLoadState('networkidle', { timeout: 30000 });
-            } else if (args[0] === 'stable') {
-              await browser.waitForStableDOM(5000);
-            } else if (args[0] === 'selector' && args[1]) {
-              await page.waitForSelector(args[1], { timeout: 30000 });
-            } else {
-              await sleep(parseInt(args[0]) || 1000);
-            }
-            break;
-          case 'screenshot':
-            const ssBuffer = await page.screenshot({ type: 'png' });
-            entry.screenshotBase64 = ssBuffer.toString('base64');
-            if (entry.screenshotBase64.length > 100000) {
-              entry.screenshotBase64 = entry.screenshotBase64.substring(0, 100000) + '...TRUNCATED';
-              entry.truncated = true;
-            }
-            break;
-          case 'observe':
-            const observeResult = await browser.observe(page, { mode: flags.mode || 'normal' });
-            entry.observe = observeResult;
-            break;
-          case 'scrollIntoView': {
-            const { element } = await browser.findElement(args[0]);
-            if (element) await element.scrollIntoViewIfNeeded();
-            break;
-          }
-          case 'scrollTo':
-            await page.evaluate((pct) => window.scrollTo(0, document.body.scrollHeight * parseInt(pct) / 100), args[0]);
-            break;
-          case 'scrollNext':
-            await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-            break;
-          case 'scrollPrev':
-            await page.evaluate(() => window.scrollBy(0, -window.innerHeight));
-            break;
-          case 'ydrag':
-            if (!args[0] || !args[1]) throw new Error('ydrag requires from and to selectors');
-            const dFromPos = await browser.getElementScreenPos(args[0]);
-            const dToPos = await browser.getElementScreenPos(args[1]);
-            await hyprctl.focusChromiumWindow();
-            await sleep(50);
-            await ydotool.naturalMouseMove(dFromPos.screenX, dFromPos.screenY, hyprctl.getCursorPos);
-            await sleep(80);
-            await execAsync('ydotool click 0x40');
-            await sleep(120);
-            await ydotool.naturalMouseMove(dToPos.screenX, dToPos.screenY, hyprctl.getCursorPos);
-            await sleep(80);
-            await execAsync('ydotool click 0x80');
-            entry.fromX = dFromPos.screenX;
-            entry.fromY = dFromPos.screenY;
-            entry.toX = dToPos.screenX;
-            entry.toY = dToPos.screenY;
-            break;
-          default:
-            throw new Error('Unknown chain action: ' + action);
-        }
-        if (willNavigate) {
-          await browser.waitForStableDOM(5000).catch(() => {});
-        }
-        stepResults.push(entry);
-      }
-
+      const stepResults = await execChainSteps(page, steps);
       const finalObserve = await browser.observe(page, { mode: 'minimal' });
       finalObserve.steps = stepResults;
-
-      return { content: [{ type: 'text', text: JSON.stringify(finalObserve) }] };
+      return enrich(page, finalObserve);
     }
   );
 
   // ── Help System ─────────────────────────────────────────
   const HELP_DOCS = {
-    'add-to-cart': 'PATTERN: Adding a product to cart\n1. Find product in search results (observe or snapshot)\n2. Use browser_add_to_cart(product_selector) — does click→close zoom→add→confirm in 1 call\n   OR manually: click product → press(Escape) → click "Añadir" → press(Escape)\n3. Verify with browser_diff() or check changed.added in click response\n\nIf product has direct "Añadir" button in results: click that button directly (saves 2 steps)',
     'chain': 'browser_chain — multi-step pipeline\nPipe-delimited: "fill 4 cebolla --submit | wait stable | observe"\n\nCommands: goto, fill, type, click, yclick, press, eval, wait (networkidle/stable/ms/selector), observe (normal/minimal/full), screenshot, scrollIntoView, scrollTo, scrollNext, scrollPrev, ydrag\n\nFlags: --submit (Enter after fill/type), --precise (no typos on type)\n\nAuto-waits for DOM stable after fill--submit and click on <a> tags.\n\nExample: "fill 4 lasaña --submit | observe minimal" → search + observe in 1 call',
     'selectors': 'SELECTOR TYPES — all tools accept both:\n1. NUMERIC IDs (from browser_observe or browser_view_tree)\n   Example: click(selector:"5"), fill(selector:"3", text:"hola")\n   Pros: stable within a page, easy, no CSS knowledge needed\n   Cons: change after navigation, need fresh observe()\n\n2. CSS SELECTORS (standard CSS syntax)\n   Example: click(selector:".search-box"), fill(selector:"#main-input", text:"hola")\n   Pros: work across page loads, reusable\n   Cons: complex for deep DOM, fragile if site redesigns\n\nGUIDE: use numeric IDs from observe() for regular interaction. Use CSS selectors when you need to target the same element across page loads (e.g., the search box is always "#search")',
     'wait': 'WAITING STRATEGIES:\n1. browser_click with wait_until:"networkidle" — click + wait for network in 1 call\n2. browser_wait_for(selector) — wait for specific element to appear\n3. browser_wait_for_any(conditions) — wait for multiple possible outcomes\n   Conditions: selector (element), url_match (URL text), text (page text), modal (modal), removed (element gone)\n4. browser_wait(type:"ms", ms:2000) — simple timeout\n5. browser_chain "wait stable" — MutationObserver, waits until DOM stops changing for 300ms\n\nGUIDE: After fill--submit, use browser_wait_for_any to detect whether results loaded or error appeared. After click on product, wait_for_any detects modal or navigation.',
     'diff': 'AUTO-DIFF SYSTEM:\nEvery modifying tool (click, fill, type, press, select, navigate, etc.) returns a "changed" field:\n{\n  "ok": true,\n  "changed": {\n    "added": [{"id":12, "tag":"button", "label":"Añadir"}],   // new elements\n    "removed": [{"id":5, "tag":"input", "label":"Buscar"}],    // removed elements\n    "new_modals": [{"type":"dialog", "text":"Aceptar cookies"}],\n    "url_changed": true\n  }\n}\n\nIf changed is null, nothing changed — no need to call observe().\nUse browser_diff() to compare with an explicit baseline observe.',
     'observe': 'browser_observe MODES:\n- mode:"minimal" (TOKEN SAVER) — only headings, buttons, links. ~500 chars. You still get all interactive element IDs.\n- mode:"normal" (default) — up to maxChars (default 20000). Full page text.\n- mode:"full" — unlimited text.\n- maxChars: override text limit (e.g., maxChars:5000)\n- maxInteractive: limit element count (default 400)\n\nGUIDE: Start with minimal for large pages. Switch to normal/full when you need product descriptions or prices. Use browser_snapshot for structured product data.',
-    'snapshot': 'browser_snapshot(selector) — Extract structured data from a container.\n\nBest selectors: "#root", "main", ".product-grid", "[class*=\"product\"]", "section"\n\nReturns: array of items with text, href, tag, classes, viewport status.\n\nGUIDE: Use browser_view_tree(section:"#container", max_depth:3) first to discover container selectors. Then snapshot(container) to get structured data.'
+    'snapshot': 'browser_snapshot(selector) — Extract structured data from a container.\n\nBest selectors: "#root", "main", ".product-grid", "[class*=\"product\"]", "section"\n\nReturns: array of items with text, href, tag, classes, viewport status.\n\nGUIDE: Use browser_view_tree(section:"#container", max_depth:3) first to discover container selectors. Then snapshot(container) to get structured data.',
+    'profiles': 'SITE PROFILES — Custom tools per domain.\n\nStore reusable tool definitions per website domain. Each domain has a JSON file at ~/.config/browser-cli/profiles/<domain>.json.\n\nTools:\n  browser_profile_create(domain, name, description, steps, inputs)\n    — Define a new tool. Use {{input_name}} placeholders in steps.\n    — inputs is an array of {name, type?, description?}.\n    — Steps use chain syntax: "click {{product}} | press Escape | click 7 | press Escape"\n\n  browser_profile_list(domain?)\n    — List tools for a domain (omit to auto-detect current page URL).\n\n  browser_profile_edit(domain, name, field, value)\n    — Edit a tool field: name, description, steps, or inputs.\n\n  browser_profile_delete(domain, name)\n    — Delete a tool.\n\n  browser_profile_run(name, inputs?)\n    — Execute a tool. Replaces {{placeholders}} with inputs, runs as chain steps.\n    — Returns diff + observe info.\n\nPATTERN: Define "search-product" for mercadona.es:\n  profile_create(domain:"mercadona.es", name:"search-product",\n    description:"Search a product and observe results",\n    steps:"fill 4 {{query}} --submit | wait stable | observe minimal",\n    inputs:[{name:"query", description:"Product to search for"}])\n\nThen run: profile_run(name:"search-product", inputs:{query:"lasaña"})'
   };
 
   server.registerTool(
     'browser_help',
     {
-      description: 'Get detailed documentation and usage patterns for browser-cli tools. Topics: add-to-cart, chain, selectors, wait, diff, observe, snapshot. Call with no topic to get a summary of available topics.',
+      description: 'Get detailed documentation and usage patterns for browser-cli tools. Topics: chain, selectors, wait, diff, observe, snapshot, profiles. Call with no topic to get a summary.',
       inputSchema: z.object({
-        topic: z.string().optional().describe('Help topic: "add-to-cart", "chain", "selectors", "wait", "diff", "observe", "snapshot". Omit for topic list.')
+        topic: z.string().optional().describe('Help topic: "chain", "selectors", "wait", "diff", "observe", "snapshot", "profiles". Omit for topic list.')
       })
     },
     async ({ topic }) => {
       if (!topic) {
-        return { content: [{ type: 'text', text: 'Available topics: add-to-cart, chain, selectors, wait, diff, observe, snapshot. Call browser_help({topic:"topic-name"}) for details.' }] };
+        return { content: [{ type: 'text', text: 'Available topics: chain, selectors, wait, diff, observe, snapshot, profiles. Call browser_help({topic:"topic-name"}) for details.' }] };
       }
       const doc = HELP_DOCS[topic];
-      if (!doc) return { content: [{ type: 'text', text: `Unknown topic "${topic}". Available: add-to-cart, chain, selectors, wait, diff, observe, snapshot.` }] };
+      if (!doc) return { content: [{ type: 'text', text: `Unknown topic "${topic}". Available: chain, selectors, wait, diff, observe, snapshot, profiles.` }] };
       return { content: [{ type: 'text', text: doc }] };
     }
   );
@@ -1101,447 +1122,5 @@ function register(server, browser) {
       return { content: [{ type: 'text', text: result }] };
     }
   );
-
-  server.registerTool(
-    'browser_solve_slide_captcha',
-    {
-      description: 'Attempt to solve a slide captcha using pixel matching or LLM vision + ydotool drag.',
-      inputSchema: z.object({
-        background_selector: z.string().optional().default('.gc-picture').describe('CSS selector for captcha background'),
-        tile_selector: z.string().optional().default('.gc-tile').describe('CSS selector for captcha tile'),
-        track_selector: z.string().optional().default('.gc-drag-slide-bar').describe('CSS selector for slider track'),
-        retries: z.number().optional().default(2).describe('Number of retries if solving fails')
-      })
-    },
-    async ({ background_selector, tile_selector, track_selector, retries }) => {
-      const page = browser.getActivePage();
-      const maxRetries = Math.min(retries || 2, 5);
-
-      const resolveEl = async (sel) => {
-        const isNumericId = !isNaN(sel) && !isNaN(parseFloat(sel));
-        const resolved = await browser.resolveSelector(sel);
-        return isNumericId ? await page.$('xpath=' + resolved) : await page.$(resolved);
-      };
-
-      const refreshCaptcha = async (scope) => {
-        await page.evaluate((scope) => {
-          const w = document.querySelector(scope);
-          if (!w) return;
-          const iconBlock = w.querySelector('.gc-icon-block');
-          if (!iconBlock) return;
-          const svgs = iconBlock.querySelectorAll('svg');
-          if (svgs.length >= 2) {
-            svgs[svgs.length - 1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
-          }
-        }, scope);
-        await sleep(2000);
-      };
-
-      const scrollToCaptcha = async () => {
-        const found = await page.evaluate(() => {
-          const h3s = document.querySelectorAll('h3');
-          for (const h3 of h3s) {
-            if (h3.textContent.includes('Slide')) {
-              h3.scrollIntoView({ behavior: 'instant', block: 'center' });
-              return true;
-            }
-          }
-          return false;
-        });
-        await sleep(500);
-        return found;
-      };
-
-      const detectScope = async () => {
-        const wrapperSel = await page.evaluate(() => {
-          const wrappers = document.querySelectorAll('.go-captcha, .captcha-wrapper, [class*="captcha"][class*="slide"]');
-          for (const w of wrappers) {
-            if (w.querySelector('.gc-tile') && w.querySelector('.gc-drag-slide-bar')) {
-              w.dataset.brSlide = '1';
-              return '.go-captcha[data-br-slide="1"]';
-            }
-          }
-          return null;
-        });
-        return wrapperSel || '';
-      };
-
-      const screenshotBg = async (sel, withGrid) => {
-        const el = await resolveEl(sel);
-        if (!el) return null;
-        await el.scrollIntoViewIfNeeded();
-        await sleep(300);
-        const box = await el.boundingBox();
-        if (!box) return null;
-
-        if (withGrid) {
-          await page.evaluate(({ box }) => {
-            const overlay = document.createElement('div');
-            overlay.id = '__br_grid';
-            overlay.style.cssText = `position:fixed; top:${box.y}px; left:${box.x}px; width:${box.width}px; height:${box.height}px; pointer-events:none; z-index:99999; overflow:visible;`;
-            for (let x = 0; x <= box.width; x += 5) {
-              const isMajor = x % 20 === 0;
-              const isMid = x % 10 === 0;
-              const line = document.createElement('div');
-              const opacity = isMajor ? 0.7 : (isMid ? 0.35 : 0.15);
-              const width = isMajor ? 2 : 1;
-              line.style.cssText = `position:absolute; left:${x}px; top:0; width:0; height:100%; border-left:${width}px solid rgba(255,0,0,${opacity});`;
-              overlay.appendChild(line);
-              if (isMajor) {
-                const label = document.createElement('span');
-                label.textContent = x + 'px';
-                label.style.cssText = `position:absolute; left:${x - 14}px; top:-16px; font-size:9px; color:#fff; font-weight:bold; font-family:monospace; background:rgba(200,0,0,0.85); padding:0 3px; line-height:14px; white-space:nowrap; border-radius:2px;`;
-                overlay.appendChild(label);
-              }
-            }
-            document.body.appendChild(overlay);
-          }, { box });
-          await sleep(150);
-        }
-
-        const vp = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
-        const clip = {
-          x: Math.max(0, box.x), y: Math.max(0, box.y),
-          width: Math.min(box.width, vp.w - Math.max(0, box.x)),
-          height: Math.min(box.height, vp.h - Math.max(0, box.y))
-        };
-        let buffer = null;
-        if (clip.width > 0 && clip.height > 0) {
-          buffer = await page.screenshot({ clip, type: 'png' });
-        }
-
-        if (withGrid) {
-          await page.evaluate(() => {
-            const g = document.getElementById('__br_grid');
-            if (g) g.remove();
-          });
-        }
-
-        return buffer ? buffer.toString('base64') : null;
-      };
-
-      const fetchImgAsBase64 = async (el) => {
-        return await page.evaluate(async (el) => {
-          const getSrc = (e) => {
-            if (e.tagName === 'IMG') return e.src;
-            const img = e.querySelector('img');
-            if (img) return img.src;
-            if (e.tagName === 'CANVAS') return e.toDataURL('image/png');
-            return null;
-          };
-          const src = getSrc(el);
-          if (!src) return null;
-          if (src.startsWith('data:image/')) return src.split(',')[1];
-          try {
-            const resp = await fetch(src, { credentials: 'omit' });
-            const blob = await resp.blob();
-            return await new Promise((resolve) => {
-              const r = new FileReader();
-              r.onload = () => resolve(r.result.split(',')[1]);
-              r.readAsDataURL(blob);
-            });
-          } catch {
-            try {
-              const c = document.createElement('canvas');
-              const img = new Image();
-              img.crossOrigin = 'anonymous';
-              await new Promise((resolve, reject) => {
-                img.onload = resolve;
-                img.onerror = reject;
-                img.src = src;
-              });
-              c.width = img.naturalWidth;
-              c.height = img.naturalHeight;
-              c.getContext('2d').drawImage(img, 0, 0);
-              return c.toDataURL('image/png').split(',')[1];
-            } catch { return null; }
-          }
-        }, el);
-      };
-
-      const findNotchByPixelMatch = async (scope, bgSel, tileSel) => {
-        try {
-          const result = await page.evaluate(({ scope, bgSel, tileSel }) => {
-            const sc = scope ? scope + ' ' : '';
-            const w = scope ? document.querySelector(scope) : document;
-            const bgImg = w.querySelector(sc + bgSel);
-            if (!bgImg || bgImg.tagName !== 'IMG') return null;
-            const tileDiv = w.querySelector(sc + '.gc-tile');
-            if (!tileDiv) return null;
-            const tileImg = tileDiv.querySelector('img');
-            if (!tileImg || tileImg.tagName !== 'IMG') return null;
-
-            const bgC = document.createElement('canvas');
-            bgC.width = bgImg.naturalWidth;
-            bgC.height = bgImg.naturalHeight;
-            const bgCtx = bgC.getContext('2d');
-            bgCtx.drawImage(bgImg, 0, 0);
-            let bgData;
-            try { bgData = bgCtx.getImageData(0, 0, bgC.width, bgC.height).data; }
-            catch { return null; }
-
-            const tC = document.createElement('canvas');
-            tC.width = tileImg.naturalWidth;
-            tC.height = tileImg.naturalHeight;
-            const tCtx = tC.getContext('2d');
-            tCtx.drawImage(tileImg, 0, 0);
-            let tileData;
-            try { tileData = tCtx.getImageData(0, 0, tC.width, tC.height).data; }
-            catch { return null; }
-
-            const bw = bgC.width, bh = bgC.height;
-            const tw = tC.width, th = tC.height;
-
-            let minTx = tw, maxTx = 0, minTy = th, maxTy = 0;
-            for (let y = 0; y < th; y++) {
-              for (let x = 0; x < tw; x++) {
-                if (tileData[(y * tw + x) * 4 + 3] > 50) {
-                  minTx = Math.min(minTx, x); maxTx = Math.max(maxTx, x);
-                  minTy = Math.min(minTy, y); maxTy = Math.max(maxTy, y);
-                }
-              }
-            }
-            const pw = maxTx - minTx + 1, ph = maxTy - minTy + 1;
-            if (pw < 10 || ph < 10) return null;
-
-            const maxSearch = Math.max(0, bw - pw);
-            if (maxSearch < 1) return null;
-
-            let bestX = 0;
-            let bestScore = -Infinity;
-            for (let sx = 0; sx <= maxSearch; sx += 2) {
-              let score = 0, cnt = 0;
-              for (let py = minTy; py <= maxTy; py++) {
-                for (let px = minTx; px <= maxTx; px++) {
-                  const ti = (py * tw + px) * 4;
-                  if (tileData[ti + 3] < 50) continue;
-                  const bx = sx + (px - minTx);
-                  if (bx >= bw) continue;
-                  const bi = (py * bw + bx) * 4;
-                  const dr = tileData[ti] - bgData[bi];
-                  const dg = tileData[ti + 1] - bgData[bi + 1];
-                  const db = tileData[ti + 2] - bgData[bi + 2];
-                  score += dr * dr + dg * dg + db * db;
-                  cnt++;
-                }
-              }
-              if (cnt > 0) {
-                const avg = score / cnt;
-                if (avg > bestScore) { bestScore = avg; bestX = sx; }
-              }
-            }
-
-            return { x: bestX, score: Math.round(bestScore), bw, bh, tw, th, pw, ph };
-          }, { scope, bgSel, tileSel });
-
-          if (!result || !result.x) return null;
-          const bgEl = await resolveEl(bgSel);
-          const box = await bgEl.boundingBox();
-          if (!box) return result.x;
-          const cssScale = box.width / result.bw;
-          return Math.round(result.x * cssScale);
-        } catch (e) {
-          return null;
-        }
-      };
-
-      const findNotchByLLM = async (bgB64, tileB64) => {
-        const prompt = `First image: slide captcha BACKGROUND with a RED coordinate grid overlaid. Every 20px has a thick red line labeled with the pixel position (e.g. "20px", "40px"). Thinner lines every 5px.
-
-The background has a notch (a cut-out hole) where a puzzle piece fits. Find the EXACT pixel X position of the CENTER of this notch by reading the grid labels.
-
-Second image: the puzzle PIECE that will be placed into the notch.
-
-Return ONLY: <answer>X</answer> where X is the exact pixel position (0-320). Be precise — look at the grid lines and estimate between them if needed.`;
-
-        const llmResponse = await llm.chat({
-          system: 'You are a precise captcha solver. Read the coordinate grid to find the notch center position. Return <answer>X</answer> with the exact pixel X coordinate.',
-          messages: [prompt],
-          images: [bgB64, tileB64]
-        });
-
-        const match = llmResponse.match(/<answer>\s*(\d{1,4})\s*<\/answer>/);
-        if (!match) return null;
-        return parseInt(match[1], 10);
-      };
-
-      let scope = await detectScope();
-      await scrollToCaptcha();
-
-      let attempt = 0;
-      let lastError = null;
-      const attempts = [];
-
-      while (attempt <= maxRetries) {
-        attempt++;
-        const scopedBgSel = scope ? scope + ' ' + background_selector : background_selector;
-        const scopedTileSel = scope ? scope + ' ' + tile_selector : tile_selector;
-
-        let targetX = await findNotchByPixelMatch(scope, background_selector, tile_selector);
-        let notchMethod = 'pixel-match';
-        let bgBase64 = null;
-        let tileBase64 = null;
-
-        if (targetX == null) {
-          await page.evaluate(() => {
-            const tile = document.querySelector('.gc-tile');
-            if (tile) tile.style.setProperty('display', 'none', 'important');
-          });
-          await sleep(100);
-          bgBase64 = await screenshotBg(scopedBgSel, true);
-          await page.evaluate(() => {
-            const tile = document.querySelector('.gc-tile');
-            if (tile) tile.style.removeProperty('display');
-          });
-          await sleep(100);
-          const tileEl = await resolveEl(scopedTileSel);
-          if (tileEl) {
-            const box = await tileEl.boundingBox();
-            if (box) {
-              const vp = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
-              const clip = {
-                x: Math.max(0, box.x), y: Math.max(0, box.y),
-                width: Math.min(box.width, vp.w - Math.max(0, box.x)),
-                height: Math.min(box.height, vp.h - Math.max(0, box.y))
-              };
-              if (clip.width > 0 && clip.height > 0) {
-                const buf = await page.screenshot({ clip, type: 'png' });
-                tileBase64 = buf.toString('base64');
-              }
-            }
-          }
-          if (bgBase64 && tileBase64) {
-            targetX = await findNotchByLLM(bgBase64, tileBase64);
-            if (targetX != null) notchMethod = 'llm';
-          }
-        }
-
-        if (targetX == null) {
-          lastError = 'Could not determine notch position';
-          break;
-        }
-
-        await scrollToCaptcha();
-        await sleep(300);
-
-        const coords = await page.evaluate(({ scope, trkSel, bgSel }) => {
-          const sc = scope ? scope + ' ' : '';
-          const bar = document.querySelector(sc + trkSel);
-          if (!bar) return null;
-          const barRect = bar.getBoundingClientRect();
-          const wrapper = scope ? document.querySelector(scope) : document;
-          const track = wrapper ? wrapper.querySelector('.gc-drag-slide-bar, [class*="slider"], [class*="track"]') : null;
-          const block = track ? track.querySelector('.gc-drag-block, [class*="block"], [class*="handle"], [class*="thumb"], button') : null;
-          const blockRect = block ? block.getBoundingClientRect() : null;
-          const bg = document.querySelector(sc + bgSel);
-          const bgRect = bg ? bg.getBoundingClientRect() : null;
-          const tile = wrapper ? wrapper.querySelector('.gc-tile') : null;
-          const tileRect = tile ? tile.getBoundingClientRect() : null;
-          return {
-            bar: { x: barRect.x, y: barRect.y, w: barRect.width, h: barRect.height },
-            block: blockRect ? { x: blockRect.x, y: blockRect.y, w: blockRect.width, h: blockRect.height } : null,
-            bg: bgRect ? { x: bgRect.x, y: bgRect.y, w: bgRect.width, h: bgRect.height } : null,
-            tile: tileRect ? { x: tileRect.x, y: tileRect.y, w: tileRect.width, h: tileRect.height } : null
-          };
-        }, { scope, trkSel: track_selector, bgSel: background_selector });
-
-        if (!coords || !coords.bar) {
-          lastError = 'Slider track not found';
-          break;
-        }
-
-        const windowPos = await hyprctl.getChromiumWindowPos();
-        if (!windowPos) {
-          lastError = 'Browser window not found';
-          break;
-        }
-
-        const calOffset = state.getCalibrationOffset();
-        const toScreenX = (pageX) => Math.round(windowPos.x + pageX + calOffset.x);
-        const toScreenY = (pageY) => Math.round(windowPos.y + pageY + calOffset.y);
-
-        let fromX, fromY, toX, toY;
-        if (coords.block) {
-          fromX = toScreenX(coords.block.x + coords.block.w / 2);
-          fromY = toScreenY(coords.block.y + coords.block.h / 2);
-        } else {
-          fromX = toScreenX(coords.bar.x + 20);
-          fromY = toScreenY(coords.bar.y + coords.bar.h / 2);
-        }
-
-        if (coords.tile && coords.bg) {
-          const tileCenterX = coords.tile.x + coords.tile.w / 2;
-          const notchX = coords.bg.x + targetX;
-          const tileDelta = notchX - tileCenterX;
-          toX = toScreenX(coords.block.x + coords.block.w / 2 + tileDelta);
-        } else if (coords.bg) {
-          toX = toScreenX(coords.bg.x + targetX);
-        } else {
-          toX = toScreenX(coords.bar.x + targetX);
-        }
-        toY = fromY;
-
-        await hyprctl.focusChromiumWindow();
-        await sleep(50);
-        await execAsync(`ydotool mousemove --absolute -x ${Math.round(fromX / 2)} -y ${Math.round(fromY / 2)}`);
-        await sleep(60);
-        await execAsync('ydotool click 0x40');
-        await sleep(100);
-        const dragDist = Math.hypot(toX - fromX, toY - fromY);
-        const dragSteps = Math.min(Math.max(Math.round(dragDist / 20), 3), 30);
-        for (let s = 1; s <= dragSteps; s++) {
-          const t = s / dragSteps;
-          const px = Math.round(fromX + (toX - fromX) * t);
-          const py = Math.round(fromY + (toY - fromY) * t);
-          await execAsync(`ydotool mousemove --absolute -x ${Math.round(px / 2)} -y ${Math.round(py / 2)}`);
-          await sleep(ydotool.rand(3, 8));
-        }
-        await sleep(80);
-        await execAsync('ydotool click 0x80');
-
-        state.record('solve-slide-captcha', { attempt, targetX, fromX, fromY, toX, toY });
-
-        await sleep(1500);
-        const verified = await page.evaluate(({ scope }) => {
-          const w = document.querySelector(scope);
-          if (!w) return { solved: false, details: { error: 'wrapper not found' } };
-          const header = w.querySelector('.gc-header');
-          const headerText = header ? header.textContent.trim().toLowerCase() : '';
-          const successTexts = ['verified', 'passed', 'success', 'check', '✓', '✔', 'complete', 'done'];
-          const failureTexts = ['failed', 'try again', 'error', 'incorrect', '✗', '✘'];
-          const hasSuccessText = successTexts.some(t => headerText.includes(t));
-          const hasFailureText = failureTexts.some(t => headerText.includes(t));
-          const defaultPrompt = 'drag the slider';
-          const promptChanged = !headerText.includes(defaultPrompt);
-          const dragBlock = w.querySelector('.gc-drag-block');
-          const blockLeft = dragBlock ? dragBlock.getBoundingClientRect().x : 0;
-          const bar = w.querySelector('.gc-drag-slide-bar');
-          const barLeft = bar ? bar.getBoundingClientRect().x : 0;
-          const snappedBack = (bar && dragBlock) ? (blockLeft - barLeft < 10) : false;
-          return {
-            solved: hasSuccessText || (promptChanged && !hasFailureText),
-            details: { headerText, promptChanged, hasSuccessText, hasFailureText, snappedBack }
-          };
-        }, { scope });
-
-        attempts.push({ targetX, fromX, fromY, toX, toY, verified: verified.solved, details: { ...verified.details, method: notchMethod } });
-
-        if (verified.solved) {
-          return {
-            content: [{ type: 'text', text: JSON.stringify({ success: true, verified: true, attempts, drag: { from: { x: Math.round(fromX), y: Math.round(fromY) }, to: { x: Math.round(toX), y: Math.round(toY) } } }) }]
-          };
-        }
-
-        if (attempt <= maxRetries) {
-          await refreshCaptcha(scope);
-        }
-      }
-
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ success: true, verified: false, error: lastError, attempts }) }]
-      };
-    }
-  );
-}
 
 module.exports = { register };

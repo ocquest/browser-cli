@@ -389,7 +389,6 @@ Once configured, the AI can use all browser tools directly:
 | `browser-cli_browser_fill` | Fill form fields |
 | `browser-cli_browser_type` | Type text with human-like behavior |
 | `browser-cli_browser_screenshot` | Take page screenshots |
-| `browser-cli_browser_solve_slide_captcha` | Solve slide captchas |
 | `browser-cli_browser_evaluate` | Execute JavaScript |
 | `browser-cli_browser_view_tree` | Get DOM tree with IDs |
 | `browser-cli_browser_drag` | Drag & drop via ydotool |

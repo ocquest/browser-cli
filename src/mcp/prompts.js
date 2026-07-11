@@ -26,7 +26,7 @@ CAPABILITIES:
 - Code: browser_evaluate
 - Scroll: browser_scroll_to, browser_scroll_into_view, browser_scroll_next, browser_scroll_prev
 - Wait: browser_wait, browser_wait_for
-- Other: browser_get_html, browser_get_page_status, browser_chain, browser_fullscreen, browser_solve_slide_captcha, browser_llm_chat
+- Other: browser_get_html, browser_get_page_status, browser_chain, browser_fullscreen, browser_llm_chat
 
 TOKEN-SAVING TIPS:
 - Use browser_observe({ mode: "minimal" }) for low-token snapshots (only headings+buttons+links)
