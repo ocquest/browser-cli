@@ -462,8 +462,8 @@ class BrowserManager {
         const href = el.getAttribute('href') || '';
         const role = el.getAttribute('role') || '';
         const type = el.getAttribute('type') || '';
-        let label = (text || aria || placeholder || '').substring(0, 120);
-        if (label.length >= 120) label = label.substring(0, 117) + '...';
+        let label = (text || aria || placeholder || '').substring(0, 60);
+        if (label.length >= 60) label = label.substring(0, 57) + '...';
         if (!label && !href && tag !== 'input' && tag !== 'textarea') continue;
         if (tag === 'a' && !href) continue;
         const key = tag + '|' + label + '|' + href;
@@ -516,10 +516,13 @@ class BrowserManager {
   }
 
   async snapshot(page, selector) {
-    const { element } = await this.findElement(selector);
+    const { element, useXpath, selector: resolved } = await this.findElement(selector);
     if (!element) throw new Error(`Element not found: ${selector}`);
-    const result = await page.evaluate((sel) => {
-      const container = document.querySelector(sel);
+    const querySel = useXpath ? resolved : selector;
+    const result = await page.evaluate(({ querySel, useXpath }) => {
+      const container = useXpath
+        ? document.evaluate(querySel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
+        : document.querySelector(querySel);
       if (!container) return null;
       const items = [];
       const iterable = container.querySelectorAll('a, button, li, article, div[class*="product"], div[class*="item"], tr');
@@ -529,14 +532,14 @@ class BrowserManager {
         const tag = el.tagName.toLowerCase();
         const rect = el.getBoundingClientRect();
         const id = el.id || '';
-        const classes = el.className || '';
+        const cls = el.getAttribute('class') || '';
         if (text.length > 5) {
-          items.push({ tag, text, href: href.substring(0, 500), id, classes: classes.substring(0, 100), inViewport: rect.y < window.innerHeight && rect.x < window.innerWidth });
+          items.push({ tag, text, href: href.substring(0, 500), id, classes: cls.substring(0, 100), inViewport: rect.y < window.innerHeight && rect.x < window.innerWidth });
         }
       }
       return { containerTag: container.tagName.toLowerCase(), containerId: container.id, containerClasses: (container.className || '').substring(0, 200), itemCount: items.length, items: items.slice(0, 100) };
-    }, selector.indexOf(' ') >= 0 || selector.startsWith('#') || selector.startsWith('.') || selector.startsWith('[') ? selector : (() => { throw new Error('use valid css'); })());
-    if (!result) throw new Error(`Container not found for selector: ${selector}`);
+    }, { querySel, useXpath });
+    if (!result) throw new Error(`Container not found for selector: ${selector}. Try a container like "#root", ".main", "main", "section", or use browser_view_tree(section: "${selector}") to see what is inside.`);
     return result;
   }
 
@@ -586,12 +589,34 @@ class BrowserManager {
           if (!parent) break;
           const tag = current.tagName.toLowerCase();
           if (current.id) {
-            parts.unshift('#' + current.id);
+            parts.unshift('#' + CSS.escape(current.id));
             break;
           }
-          const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
+          const ariaLabel = current.getAttribute('aria-label');
+          if (ariaLabel) {
+            parts.unshift(tag + '[aria-label="' + ariaLabel.replace(/"/g, '\\"') + '"]');
+            current = parent;
+            continue;
+          }
+          const dataTestId = current.getAttribute('data-testid') || current.getAttribute('data-test-id');
+          if (dataTestId) {
+            parts.unshift(tag + '[data-testid="' + dataTestId + '"]');
+            current = parent;
+            continue;
+          }
+          const cls = current.getAttribute('class');
+          if (cls) {
+            const cleanCls = cls.trim().split(/\s+/).filter(c => c.length > 0 && !c.startsWith('sc-') && !c.startsWith('css-')).slice(0, 2);
+            if (cleanCls.length > 0) {
+              parts.unshift(tag + '.' + cleanCls.map(c => CSS.escape(c)).join('.'));
+              current = parent;
+              continue;
+            }
+          }
+          const allChildren = Array.from(parent.children);
+          const siblings = allChildren.filter(c => c.tagName === current.tagName);
           if (siblings.length > 1) {
-            const idx = siblings.indexOf(current) + 1;
+            const idx = allChildren.indexOf(current) + 1;
             parts.unshift(tag + ':nth-child(' + idx + ')');
           } else {
             parts.unshift(tag);

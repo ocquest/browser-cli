@@ -465,6 +465,73 @@ function register(server, browser) {
   );
 
   server.registerTool(
+    'browser_add_to_cart',
+    {
+      description: 'Add a product to cart. Clicks the product element (numeric ID from observe), closes zoom overlay if present, clicks "Add to cart", closes confirmation. Single call for the full flow.',
+      inputSchema: z.object({
+        product_selector: z.string().describe('CSS selector or numeric ID of the product to add'),
+        add_selector: z.string().optional().describe('CSS selector or numeric ID of the "Add to cart" button (auto-detected if not provided)'),
+        confirm_selector: z.string().optional().describe('CSS selector or numeric ID to close confirmation dialog (auto-detected if not provided)')
+      })
+    },
+    async ({ product_selector, add_selector, confirm_selector }) => {
+      const page = browser.getActivePage();
+      const results = [];
+
+      const clickEl = async (sel) => {
+        const { element } = await browser.findElement(sel);
+        if (!element) throw new Error('Element not found: ' + sel);
+        await element.click();
+        results.push('clicked ' + sel);
+      };
+
+      const pressEscape = async () => {
+        await page.keyboard.press('Escape');
+        await sleep(300);
+        results.push('pressed Escape');
+      };
+
+      const autoClickAdd = async () => {
+        const addTexts = ['añadir al carro', 'add to cart', 'añadir', 'comprar', 'add'];
+        for (const text of addTexts) {
+          const found = await page.evaluate((t) => {
+            const btns = document.querySelectorAll('button, a[role="button"], [role="button"]');
+            for (const btn of btns) {
+              if (btn.textContent.trim().toLowerCase().includes(t)) {
+                btn.click();
+                return btn.textContent.trim().substring(0, 60);
+              }
+            }
+            return null;
+          }, text);
+          if (found) { results.push('auto-add: "' + found + '"'); return; }
+        }
+        throw new Error('Could not find "Add to cart" button automatically. Provide add_selector.');
+      };
+
+      await clickEl(product_selector);
+      await sleep(800);
+      await pressEscape();
+      await sleep(400);
+      if (add_selector) {
+        await clickEl(add_selector);
+      } else {
+        await autoClickAdd();
+      }
+      await sleep(600);
+      if (confirm_selector) {
+        await clickEl(confirm_selector);
+      } else {
+        await pressEscape();
+      }
+      await sleep(300);
+
+      state.record('add-to-cart', { product_selector, results });
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, steps: results, product_selector }) }] };
+    }
+  );
+
+  server.registerTool(
     'browser_wait_for',
     {
       description: 'Wait for an element to appear on the page. Accepts numeric IDs or CSS selectors. Polls until found or timeout.',
@@ -761,16 +828,30 @@ function register(server, browser) {
   server.registerTool(
     'browser_chain',
     {
-      description: 'Execute a multi-step pipeline in a single call. Pipe-delimited syntax: action arg1 arg2 | action arg1 | ...',
+      description: 'Execute a multi-step pipeline in a single call. Pipe-delimited. Supports --submit flag for fill/type. All selectors accept numeric IDs. E.g.: "fill 4 lasaña --submit | observe minimal | click 7"',
       inputSchema: z.object({
-        steps: z.string().describe('Pipe-delimited pipeline. E.g.: "goto https://x.com | observe | screenshot"')
+        steps: z.string().describe('Pipe-delimited pipeline. E.g.: "fill 5 lasaña --submit | observe minimal | click 3 | wait networkidle"')
       })
     },
     async ({ steps }) => {
       const page = browser.getActivePage();
+      if (!page) throw new Error('No active page');
       const parsedSteps = steps.split('|').map(s => s.trim()).filter(Boolean).map(s => {
         const parts = s.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
-        return { action: parts[0], args: parts.slice(1).map(a => a.replace(/^"(.*)"$/, '$1')) };
+        const action = parts[0];
+        const rawArgs = parts.slice(1).map(a => a.replace(/^"(.*)"$/, '$1'));
+        const flags = {};
+        const args = rawArgs.filter(a => {
+          if (a === '--submit') { flags.submit = true; return false; }
+          if (a === '--precise') { flags.precise = true; return false; }
+          if (a.startsWith('--')) return false;
+          return true;
+        });
+        if (action === 'observe') {
+          if (rawArgs.includes('minimal') || rawArgs.includes('--minimal')) flags.mode = 'minimal';
+          if (rawArgs.includes('full') || rawArgs.includes('--full')) flags.mode = 'full';
+        }
+        return { action, args, flags };
       });
 
       if (!parsedSteps.length) throw new Error('no steps');
@@ -778,22 +859,28 @@ function register(server, browser) {
       const stepResults = [];
 
       for (const step of parsedSteps) {
-        const { action, args } = step;
-        const entry = { action, args };
+        const { action, args, flags } = step;
+        const entry = { action, args: [...args], flags };
         switch (action) {
           case 'goto':
-            await page.goto(args[0]);
+            await page.goto(args[0], { timeout: 30000 });
             break;
-          case 'fill':
-            await page.fill(args[0], args.slice(1).join(' '));
+          case 'fill': {
+            if (!args[0]) throw new Error('fill requires selector and text');
+            const { element } = await browser.findElement(args[0]);
+            await element.fill(args.slice(1).join(' '));
+            if (flags.submit) await page.keyboard.press('Enter');
             break;
+          }
           case 'press':
             await page.keyboard.press(args[0]);
             entry.key = args[0];
             break;
-          case 'click':
-            await page.click(args[0]);
+          case 'click': {
+            const { element } = await browser.findElement(args[0]);
+            await element.click();
             break;
+          }
           case 'yclick':
             if (!args[0]) throw new Error('yclick requires a selector');
             await browser.ensureClickable(args[0]);
@@ -806,24 +893,22 @@ function register(server, browser) {
             entry.x = ypos.screenX;
             entry.y = ypos.screenY;
             break;
-          case 'type':
-            const typeIdx = args[0] === '--precise' ? 1 : 0;
-            const typeSelector = args[typeIdx];
-            const typeText = args.slice(typeIdx + 1).join(' ');
-            const typePrecise = args[0] === '--precise';
-            await page.evaluate((sel) => {
-              const el = document.querySelector(sel);
-              if (el) { el.value = ''; el.focus(); }
-            }, typeSelector);
-            if (typePrecise) {
+          case 'type': {
+            if (!args[0]) throw new Error('type requires selector and text');
+            const { element } = await browser.findElement(args[0]);
+            await element.evaluate(el => { el.value = ''; el.focus(); });
+            const typeText = args.slice(1).join(' ');
+            if (flags.precise) {
               for (const ch of typeText) {
                 await page.keyboard.type(ch);
                 await sleep(browser.randInt(10, 30));
               }
             } else {
-              await browser.humanType(page, typeSelector, typeText);
+              await browser.humanType(page, args[0], typeText);
             }
+            if (flags.submit) await page.keyboard.press('Enter');
             break;
+          }
           case 'eval':
             const evalCode = args.join(' ');
             const evalResult = await page.evaluate(evalCode);
@@ -847,12 +932,14 @@ function register(server, browser) {
             }
             break;
           case 'observe':
-            const observeResult = await browser.observe(page);
+            const observeResult = await browser.observe(page, { mode: flags.mode || 'normal' });
             entry.observe = observeResult;
             break;
-          case 'scrollIntoView':
-            await page.evaluate((sel) => document.querySelector(sel)?.scrollIntoView({ behavior: 'instant', block: 'center' }), args[0]);
+          case 'scrollIntoView': {
+            const { element } = await browser.findElement(args[0]);
+            if (element) await element.scrollIntoViewIfNeeded();
             break;
+          }
           case 'scrollTo':
             await page.evaluate((pct) => window.scrollTo(0, document.body.scrollHeight * parseInt(pct) / 100), args[0]);
             break;
@@ -886,7 +973,7 @@ function register(server, browser) {
         stepResults.push(entry);
       }
 
-      const finalObserve = await browser.observe(page);
+      const finalObserve = await browser.observe(page, { mode: 'minimal' });
       finalObserve.steps = stepResults;
 
       return { content: [{ type: 'text', text: JSON.stringify(finalObserve) }] };
