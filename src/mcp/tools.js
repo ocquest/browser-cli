@@ -136,14 +136,16 @@ function register(server, browser) {
   server.registerTool(
     'browser_click_pw',
     {
-      description: 'Click an element using Playwright (detectable by anti-bot systems). Use only if browser_click fails.',
-      inputSchema: z.object({ selector: z.string().describe('CSS selector') })
+      description: 'Click an element using Playwright (detectable by anti-bot systems). Use only if browser_click fails. Also accepts numeric IDs from observe/view_tree.',
+      inputSchema: z.object({ selector: z.string().describe('CSS selector or numeric element ID') })
     },
     async ({ selector }) => {
       const page = browser.getActivePage();
       const modals = await browser.detectModals(page);
       if (modals.length) await browser.autoDismissBlockers(page);
-      await page.click(selector);
+      const { element } = await browser.findElement(selector);
+      if (!element) throw new Error('Element not found: ' + selector);
+      await element.click();
       state.record('click', { selector });
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
     }
@@ -283,12 +285,14 @@ function register(server, browser) {
   server.registerTool(
     'browser_observe',
     {
-      description: 'Get a structured snapshot of the current page: URL, title, viewport, scroll position, interactive elements (up to 200), visible text (up to 5000 chars), and detected modals.',
-      inputSchema: z.object({})
+      description: 'Get a structured snapshot of the current page: URL, title, viewport, scroll position, interactive elements (up to 400), text (up to 20000 chars), and detected modals. Set cleanText=true to get deduplicated text from visible elements only.',
+      inputSchema: z.object({
+        cleanText: z.boolean().optional().default(false).describe('If true, returns deduplicated text from visible headings, paragraphs, list items, buttons, links only (excludes hidden/duplicate text)')
+      })
     },
-    async () => {
+    async ({ cleanText }) => {
       const page = browser.getActivePage();
-      const result = await browser.observe(page);
+      const result = await browser.observe(page, cleanText);
       state.record('observe');
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -297,7 +301,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_view_tree',
     {
-      description: 'Get the DOM/accessibility tree with numeric node IDs. Can filter by role, tag, text match, and max depth.',
+      description: 'Get the DOM/accessibility tree with numeric node IDs and CSS selectors. Can filter by role, tag, text match, and max depth.',
       inputSchema: z.object({
         role: z.string().optional().describe('Filter by ARIA role (e.g., "button,link")'),
         tag: z.string().optional().describe('Filter by tag name (e.g., "button,input,a")'),
@@ -397,6 +401,46 @@ function register(server, browser) {
       const page = browser.getActivePage();
       const info = await browser.getPageInfo(page);
       return { content: [{ type: 'text', text: JSON.stringify(info) }] };
+    }
+  );
+
+  // ── Text Search ─────────────────────────────────────────
+  server.registerTool(
+    'browser_find_text',
+    {
+      description: 'Search the page for elements containing specific text. Returns matching elements with tag, text, and whether they are in the viewport.',
+      inputSchema: z.object({
+        query: z.string().describe('Text to search for (case-insensitive)')
+      })
+    },
+    async ({ query }) => {
+      const page = browser.getActivePage();
+      const results = await page.evaluate((q) => {
+        const matches = [];
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        let node;
+        while (node = walker.nextNode()) {
+          const text = node.textContent.trim();
+          if (text.length > 0 && text.toLowerCase().includes(q.toLowerCase())) {
+            const parent = node.parentNode;
+            if (!parent) continue;
+            const rect = parent.getBoundingClientRect();
+            const tag = parent.tagName.toLowerCase();
+            const id = parent.id || '';
+            const classes = parent.className || '';
+            const cssSel = id ? '#' + id : tag + (classes ? '.' + classes.split(' ').filter(Boolean).join('.') : '');
+            matches.push({
+              tag,
+              text: text.substring(0, 200),
+              cssSelector: cssSel,
+              inViewport: rect.y < window.innerHeight && rect.x < window.innerWidth && rect.y + rect.height > 0
+            });
+          }
+        }
+        return matches.slice(0, 50);
+      }, query);
+      state.record('find-text', { query, count: results.length });
+      return { content: [{ type: 'text', text: JSON.stringify({ query, count: results.length, results }) }] };
     }
   );
 

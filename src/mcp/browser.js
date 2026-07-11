@@ -413,9 +413,9 @@ class BrowserManager {
     }
   }
 
-  async observe(page) {
+  async observe(page, cleanText = false) {
     const idToXPath = {};
-    const result = await page.evaluate(() => {
+    const result = await page.evaluate((cleanText) => {
       function getXPath(node) {
         if (node === document.body) return '/html/body';
         if (node === document.documentElement) return '/html';
@@ -460,17 +460,25 @@ class BrowserManager {
           inViewport: rect.y < window.innerHeight && rect.x < window.innerWidth
         });
       }
+      let pageText = document.body.innerText.trim();
+      if (cleanText) {
+        pageText = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, li, td, th, label, span, div:not(div div), button, a'))
+          .map(el => el.textContent.trim())
+          .filter(t => t.length > 2)
+          .filter((t, i, a) => a.indexOf(t) === i)
+          .join('\n');
+      }
       return {
         url: window.location.href,
         title: document.title,
         viewport: { width: window.innerWidth, height: window.innerHeight },
         scrollY: window.scrollY,
         scrollH: document.body.scrollHeight,
-        interactive: interactive.slice(0, 200),
-        text: document.body.innerText.trim().substring(0, 5000),
+        interactive: interactive.slice(0, 400),
+        text: pageText.substring(0, 20000),
         xpathMap
       };
-    });
+    }, cleanText);
     state.setIdToXPath(result.xpathMap || {});
     delete result.xpathMap;
     const modals = await this.detectModals(page);
@@ -494,6 +502,28 @@ class BrowserManager {
         const idx = sameTag.indexOf(node) + 1;
         return getXPath(parent) + '/' + node.nodeName.toLowerCase() + '[' + idx + ']';
       }
+      function getCSSSelector(node) {
+        const parts = [];
+        let current = node;
+        while (current && current !== document.body && current !== document.documentElement) {
+          const parent = current.parentNode;
+          if (!parent) break;
+          const tag = current.tagName.toLowerCase();
+          if (current.id) {
+            parts.unshift('#' + current.id);
+            break;
+          }
+          const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
+          if (siblings.length > 1) {
+            const idx = siblings.indexOf(current) + 1;
+            parts.unshift(tag + ':nth-child(' + idx + ')');
+          } else {
+            parts.unshift(tag);
+          }
+          current = parent;
+        }
+        return parts.join(' > ');
+      }
       function buildTree(node, depth) {
         if (node.nodeType !== Node.ELEMENT_NODE) return null;
         if (maxDepth && depth > maxDepth) return null;
@@ -503,9 +533,11 @@ class BrowserManager {
         const id = ++idCounter;
         const xpath = getXPath(node);
         if (xpath) idToXPath[id] = xpath;
+        const cssSel = getCSSSelector(node);
         let line = '[' + id + '] ' + tagName;
         if (role) line += ' [' + role + ']';
         if (name) line += ': ' + name;
+        if (cssSel) line += ' css="' + cssSel + '"';
         let passes = true;
         if (roleFilter && !roleFilter.split(',').includes(role)) passes = false;
         if (tag && !tag.split(',').includes(tagName)) passes = false;

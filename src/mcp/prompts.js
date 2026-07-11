@@ -21,7 +21,8 @@ CAPABILITIES:
 - Fill form fields with browser_fill or browser_type (human-like typing)
 - Press keyboard keys with browser_press (Enter, Tab, Escape, etc.)
 - Take screenshots with browser_screenshot
-- Get the DOM tree with browser_view_tree
+- Get the DOM tree (with CSS selectors) with browser_view_tree
+- Search page text with browser_find_text
 - Manage tabs with browser_list_tabs, browser_switch_tab, browser_close_tab
 - Execute JavaScript with browser_evaluate
 - Scroll pages with browser_scroll_*, browser_scroll_to
@@ -68,7 +69,9 @@ IMPORTANT RULES:
 - Never assume what happened — always verify with browser_observe
 - If a click fails, check for modals/overlays with browser_observe and dismiss them
 - If stuck, use browser_screenshot for visual context
-- Use browser_view_tree for a complete DOM view when browser_observe is not enough
+- Use browser_view_tree for a complete DOM view with CSS selectors when browser_observe is not enough
+- Use browser_observe({ cleanText: true }) to get only visible, deduplicated text (great for large pages like Mercadona)
+- Use browser_find_text to search for specific text elements on the page
 - For long tasks, keep a mental note of what step you are on`
             }
           }
