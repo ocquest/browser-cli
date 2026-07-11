@@ -71,7 +71,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_navigate',
     {
-      description: 'Navigate the browser to a URL',
+      description: 'Navigate the browser to a URL. Returns URL, title, viewport info, and "changed" diff. For SPAs (Mercadona, React apps), prefer using browser_fill on the search box with --submit instead of navigating to URLs.',
       inputSchema: z.object({ url: z.string().describe('The URL to navigate to') })
     },
     async ({ url }) => {
@@ -138,7 +138,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_click',
     {
-      description: 'Click an element using ydotool (system-level, undetectable). Provide a CSS selector or numeric ID. Set wait_until="networkidle" to auto-wait for page load after click.',
+      description: 'PREFERRED click method — uses ydotool (system-level mouse, undetectable by anti-bot). Accepts numeric IDs (from observe/view_tree) or CSS selectors. Returns "changed" with added/removed elements. If error "element covered" or "covered by", use browser_press("Escape") first to dismiss modals. If error "Chrome window not found", use browser_click_pw instead (Playwright fallback, works without visible window). Set wait_until="networkidle" for clicks that navigate to a new page.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector or numeric element ID'),
         wait_until: z.enum(['none', 'networkidle']).optional().default('none').describe('If "networkidle", waits for page to finish loading after click')
@@ -166,7 +166,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_click_pw',
     {
-      description: 'Click an element using Playwright (detectable by anti-bot systems). Use only if browser_click fails. Accepts numeric IDs or CSS selectors. Set wait_until="networkidle" to auto-wait for page load.',
+      description: 'FALLBACK click — uses Playwright (detectable by anti-bot, but works without visible Chrome window). Use when browser_click fails with "Chrome window not found". Accepts numeric IDs or CSS selectors. Returns "changed" with added/removed elements. Set wait_until="networkidle" for navigation clicks.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector or numeric element ID'),
         wait_until: z.enum(['none', 'networkidle']).optional().default('none').describe('If "networkidle", waits for page to finish loading after click')
@@ -192,7 +192,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_drag',
     {
-      description: 'Drag and drop using ydotool (system-level). Provide source and target selectors/IDs.',
+      description: 'Drag and drop using ydotool (system-level mouse, undetectable). Provide source and target as numeric IDs or selectors. Uses natural mouse movement. Returns "changed" diff.',
       inputSchema: z.object({
         from: z.string().describe('CSS selector or numeric ID of the element to drag'),
         to: z.string().describe('CSS selector or numeric ID of the drop target')
@@ -221,7 +221,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_fill',
     {
-      description: 'Fill a form field using Playwright (fast, detectable). Accepts numeric IDs or CSS selectors. Use submit=true to press Enter after filling.',
+      description: 'Fill a form field (fast, detectable). USE THIS for search boxes, text inputs, textareas. Accepts numeric IDs or CSS selectors. Set submit=true to type+Enter in one call (essential for search bars). For password/sensitive fields use browser_type (human-like). Returns "changed" diff. Pattern: fill(4, "cebolla", submit:true) → search results load.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector or numeric element ID of the input/textarea'),
         text: z.string().describe('Text to fill'),
@@ -266,7 +266,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_type',
     {
-      description: 'Type text into a field with human-like behavior (typos, bursts, pauses). Slower but undetectable. Accepts numeric IDs or CSS selectors.',
+      description: 'Human-like typing (typos, bursts, pauses). SLOWER but undetectable. Use for passwords, sensitive fields, or when bot detection is aggressive. For fast input (search bars, forms) use browser_fill instead. Accepts numeric IDs or CSS selectors. Set submit=true for type+Enter. Returns "changed" diff.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector or numeric element ID of the input'),
         text: z.string().describe('Text to type'),
@@ -298,7 +298,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_press',
     {
-      description: 'Press a keyboard key (e.g. Enter, Tab, Escape, ArrowDown, etc.)',
+      description: 'Press a keyboard key. KEY PATTERNS: Escape → dismiss modals/overlays (use before every click if modals may be present). Enter → submit forms. Tab → move focus. ArrowDown/ArrowUp → navigate dropdowns. Returns "changed" diff.',
       inputSchema: z.object({
         key: z.string().describe('Key to press (e.g., Enter, Tab, Escape, ArrowDown)')
       })
@@ -318,7 +318,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_select',
     {
-      description: 'Select an option in a <select> dropdown. Accepts numeric IDs or CSS selectors.',
+      description: 'Select an option in a dropdown. Works with <select> elements and custom dropdowns. Accepts numeric IDs or CSS selectors. For custom dropdowns, clicks the element then finds the option by text. Returns "changed" diff.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector or numeric element ID of the select element'),
         value: z.string().describe('Value or label of the option to select')
@@ -349,7 +349,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_observe',
     {
-      description: 'Get a structured snapshot of the current page. Modes: "normal" (default, 20K chars), "minimal" (only headings+buttons+links, low token), "full" (unlimited text). Set maxChars to override text limit. Set maxInteractive to limit elements count.',
+      description: 'OBSERVE the page — returns URL, title, interactive elements (with numeric IDs), visible text, and modals. MODES: "normal" (default, 20K chars), "minimal" (only headings+buttons+links, ~500 chars, TOKEN-SAVING), "full" (unlimited text). TOKEN TIP: Use mode:"minimal" for large pages (Mercadona, Amazon) — you still get all interactive element IDs for clicking. Use maxChars to cap text length. Elements have numeric IDs — use these for click/fill/type. AFTER any action, check the "changed" field in the response instead of calling observe again.',
       inputSchema: z.object({
         mode: z.enum(['normal', 'minimal', 'full']).optional().default('normal').describe('"minimal" for low-token snapshot (headings+buttons+links only), "normal" for default (up to maxChars), "full" for all text'),
         maxChars: z.number().optional().default(20000).describe('Maximum characters of text to return (default 20000, only used in normal mode)'),
@@ -367,7 +367,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_view_tree',
     {
-      description: 'Get the DOM/accessibility tree with numeric node IDs and CSS selectors. Default max_depth=5 to save tokens. Use section to scope to a container (e.g. "#product-list", ".main-content").',
+      description: 'Get the DOM tree with numeric IDs and CSS selectors (e.g., button[aria-label="Add to cart"]). TOKEN TIP: Use section="#container" to scope to a specific area (e.g., "#product-grid"). Default max_depth=5 — set max_depth=3 for overview, max_depth=10 for full detail. Nodes include css="..." with real selectors (aria-label, data-testid, class-based). Use when browser_observe does not show enough interactive elements.',
       inputSchema: z.object({
         role: z.string().optional().describe('Filter by ARIA role (e.g., "button,link")'),
         tag: z.string().optional().describe('Filter by tag name (e.g., "button,input,a")'),
@@ -475,7 +475,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_snapshot',
     {
-      description: 'Extract structured data from a container element (e.g. product grid, table, list). Returns all items with text, href, tag, and viewport info.',
+      description: 'Extract structured DATA from a container (grid, list, table, product listings). Pass a CSS selector for the container (e.g., "#product-grid", ".product-list", "main"). Returns array of items with text, href, tag, and classes. Use when you need product names, prices, or links from a listing. For best results, combine with browser_view_tree(section:"#container") first to find the right container selector.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector of the container element (e.g. "#product-grid", ".product-list")')
       })
@@ -491,7 +491,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_diff',
     {
-      description: 'Compare current page state with the last browser_observe snapshot. Shows URL changes, new/removed interactive elements. Call browser_observe() first to establish a baseline.',
+      description: 'DIFF — compare current page with last browser_observe snapshot. Returns URL changes, new/removed interactive elements. USE INSTEAD of a full observe() when you just need to check if something changed. Example: after click, call diff() to confirm a modal appeared or the URL changed. First call browser_observe() to set a baseline.',
       inputSchema: z.object({})
     },
     async () => {
@@ -504,7 +504,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_add_to_cart',
     {
-      description: 'Add a product to cart. Clicks the product element (numeric ID from observe), closes zoom overlay if present, clicks "Add to cart", closes confirmation. Single call for the full flow.',
+      description: 'COMPOSITE: Add product to cart in one call. Flow: click product → Escape (close zoom overlay) → auto-detect "Add to cart" button → click → Escape (close confirmation). Provide product_selector (numeric ID from observe). Optionally provide add_selector and confirm_selector if auto-detection fails. Saves 3-4 tool calls per product.',
       inputSchema: z.object({
         product_selector: z.string().describe('CSS selector or numeric ID of the product to add'),
         add_selector: z.string().optional().describe('CSS selector or numeric ID of the "Add to cart" button (auto-detected if not provided)'),
@@ -571,7 +571,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_wait_for',
     {
-      description: 'Wait for an element to appear on the page. Accepts numeric IDs or CSS selectors. Polls until found or timeout.',
+      description: 'Wait for a specific element to appear. Accepts numeric IDs or CSS selectors. Polls every 200ms until found or timeout. Use after navigation or actions that trigger async content loading. For complex waits (multiple conditions), use browser_wait_for_any instead.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector or numeric element ID to wait for'),
         timeout: z.number().optional().default(30000).describe('Maximum time to wait in ms (default 30000)')
@@ -587,7 +587,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_wait_for_any',
     {
-      description: 'Wait until any of multiple conditions is met. Each condition can be: selector (CSS), url_match (text in URL), text (page text), modal (modal content), removed (element removed). Returns which condition triggered first.',
+      description: 'SMART WAIT — wait until ANY condition triggers. Conditions: selector (CSS element appears), url_match (URL includes text), text (page text found), modal (modal with text), removed (element disappears). Returns which condition won. USE AFTER uncertain actions: "did a modal appear or did the page navigate?" Pass multiple conditions and the first one met wins. Example: [{type:"text",arg:"Añadido"},{type:"modal",arg:"error"},{type:"url_match",arg:"/cart"}]',
       inputSchema: z.object({
         conditions: z.array(z.object({
           type: z.enum(['selector', 'url_match', 'text', 'modal', 'removed']).describe('Type of condition to check'),
@@ -622,7 +622,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_find_text',
     {
-      description: 'Search the page for elements containing specific text. Returns matching elements with tag, text, and whether they are in the viewport.',
+      description: 'TEXT SEARCH — find all elements containing specific text. Returns up to 50 matches with tag, text sample, CSS selector, and viewport status. Use to locate elements by their text content when numeric IDs are not available. Example: find_text("Añadir al carro") returns the add-to-cart button even if you don\'t have its ID.',
       inputSchema: z.object({
         query: z.string().describe('Text to search for (case-insensitive)')
       })
@@ -754,7 +754,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_evaluate',
     {
-      description: 'Execute JavaScript code in the context of the current page.',
+      description: 'Execute JavaScript in the page context. Use for advanced DOM queries, extracting specific data, or triggering custom behavior. Returns the result of the expression. Examples: "document.title", "document.querySelectorAll(\'.price\').length", "JSON.parse(localStorage.getItem(\'cart\'))"',
       inputSchema: z.object({ code: z.string().describe('JavaScript code to execute') })
     },
     async ({ code }) => {
@@ -768,7 +768,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_wait',
     {
-      description: 'Wait for a condition: network idle, CSS selector, or timeout.',
+      description: 'Legacy wait. Use browser_wait_for or browser_wait_for_any instead. Types: "networkidle" (wait for network), "selector" (wait for CSS element), "ms" (timeout in ms).',
       inputSchema: z.object({
         type: z.enum(['networkidle', 'selector', 'ms']).describe('Type of wait condition'),
         arg: z.string().optional().describe('CSS selector (if type=selector) or ms (if type=ms)'),
@@ -884,7 +884,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_chain',
     {
-      description: 'Execute a multi-step pipeline in a single call. Pipe-delimited. Supports --submit flag for fill/type. All selectors accept numeric IDs. E.g.: "fill 4 lasaña --submit | observe minimal | click 7"',
+      description: 'MULTI-STEP pipeline in one call. Pipe-delimited. E.g.: "fill 5 cebolla --submit | wait stable | observe minimal". All selectors accept numeric IDs. Supports --submit (Enter after fill/type), --precise (no typos for type). Auto-waits for DOM stable after fill--submit and click on <a> tags. Available commands: goto, fill, type, click, yclick, press, eval, wait (networkidle/stable/ms/selector), observe (normal/minimal/full), screenshot, scrollIntoView, scrollTo, scrollNext, scrollPrev, ydrag. SAVES ROUND-TRIPS: 3-5 tool calls in 1.',
       inputSchema: z.object({
         steps: z.string().describe('Pipe-delimited pipeline. E.g.: "fill 5 lasaña --submit | observe minimal | click 3 | wait networkidle"')
       })
@@ -1052,6 +1052,35 @@ function register(server, browser) {
       finalObserve.steps = stepResults;
 
       return { content: [{ type: 'text', text: JSON.stringify(finalObserve) }] };
+    }
+  );
+
+  // ── Help System ─────────────────────────────────────────
+  const HELP_DOCS = {
+    'add-to-cart': 'PATTERN: Adding a product to cart\n1. Find product in search results (observe or snapshot)\n2. Use browser_add_to_cart(product_selector) — does click→close zoom→add→confirm in 1 call\n   OR manually: click product → press(Escape) → click "Añadir" → press(Escape)\n3. Verify with browser_diff() or check changed.added in click response\n\nIf product has direct "Añadir" button in results: click that button directly (saves 2 steps)',
+    'chain': 'browser_chain — multi-step pipeline\nPipe-delimited: "fill 4 cebolla --submit | wait stable | observe"\n\nCommands: goto, fill, type, click, yclick, press, eval, wait (networkidle/stable/ms/selector), observe (normal/minimal/full), screenshot, scrollIntoView, scrollTo, scrollNext, scrollPrev, ydrag\n\nFlags: --submit (Enter after fill/type), --precise (no typos on type)\n\nAuto-waits for DOM stable after fill--submit and click on <a> tags.\n\nExample: "fill 4 lasaña --submit | observe minimal" → search + observe in 1 call',
+    'selectors': 'SELECTOR TYPES — all tools accept both:\n1. NUMERIC IDs (from browser_observe or browser_view_tree)\n   Example: click(selector:"5"), fill(selector:"3", text:"hola")\n   Pros: stable within a page, easy, no CSS knowledge needed\n   Cons: change after navigation, need fresh observe()\n\n2. CSS SELECTORS (standard CSS syntax)\n   Example: click(selector:".search-box"), fill(selector:"#main-input", text:"hola")\n   Pros: work across page loads, reusable\n   Cons: complex for deep DOM, fragile if site redesigns\n\nGUIDE: use numeric IDs from observe() for regular interaction. Use CSS selectors when you need to target the same element across page loads (e.g., the search box is always "#search")',
+    'wait': 'WAITING STRATEGIES:\n1. browser_click with wait_until:"networkidle" — click + wait for network in 1 call\n2. browser_wait_for(selector) — wait for specific element to appear\n3. browser_wait_for_any(conditions) — wait for multiple possible outcomes\n   Conditions: selector (element), url_match (URL text), text (page text), modal (modal), removed (element gone)\n4. browser_wait(type:"ms", ms:2000) — simple timeout\n5. browser_chain "wait stable" — MutationObserver, waits until DOM stops changing for 300ms\n\nGUIDE: After fill--submit, use browser_wait_for_any to detect whether results loaded or error appeared. After click on product, wait_for_any detects modal or navigation.',
+    'diff': 'AUTO-DIFF SYSTEM:\nEvery modifying tool (click, fill, type, press, select, navigate, etc.) returns a "changed" field:\n{\n  "ok": true,\n  "changed": {\n    "added": [{"id":12, "tag":"button", "label":"Añadir"}],   // new elements\n    "removed": [{"id":5, "tag":"input", "label":"Buscar"}],    // removed elements\n    "new_modals": [{"type":"dialog", "text":"Aceptar cookies"}],\n    "url_changed": true\n  }\n}\n\nIf changed is null, nothing changed — no need to call observe().\nUse browser_diff() to compare with an explicit baseline observe.',
+    'observe': 'browser_observe MODES:\n- mode:"minimal" (TOKEN SAVER) — only headings, buttons, links. ~500 chars. You still get all interactive element IDs.\n- mode:"normal" (default) — up to maxChars (default 20000). Full page text.\n- mode:"full" — unlimited text.\n- maxChars: override text limit (e.g., maxChars:5000)\n- maxInteractive: limit element count (default 400)\n\nGUIDE: Start with minimal for large pages. Switch to normal/full when you need product descriptions or prices. Use browser_snapshot for structured product data.',
+    'snapshot': 'browser_snapshot(selector) — Extract structured data from a container.\n\nBest selectors: "#root", "main", ".product-grid", "[class*=\"product\"]", "section"\n\nReturns: array of items with text, href, tag, classes, viewport status.\n\nGUIDE: Use browser_view_tree(section:"#container", max_depth:3) first to discover container selectors. Then snapshot(container) to get structured data.'
+  };
+
+  server.registerTool(
+    'browser_help',
+    {
+      description: 'Get detailed documentation and usage patterns for browser-cli tools. Topics: add-to-cart, chain, selectors, wait, diff, observe, snapshot. Call with no topic to get a summary of available topics.',
+      inputSchema: z.object({
+        topic: z.string().optional().describe('Help topic: "add-to-cart", "chain", "selectors", "wait", "diff", "observe", "snapshot". Omit for topic list.')
+      })
+    },
+    async ({ topic }) => {
+      if (!topic) {
+        return { content: [{ type: 'text', text: 'Available topics: add-to-cart, chain, selectors, wait, diff, observe, snapshot. Call browser_help({topic:"topic-name"}) for details.' }] };
+      }
+      const doc = HELP_DOCS[topic];
+      if (!doc) return { content: [{ type: 'text', text: `Unknown topic "${topic}". Available: add-to-cart, chain, selectors, wait, diff, observe, snapshot.` }] };
+      return { content: [{ type: 'text', text: doc }] };
     }
   );
 
