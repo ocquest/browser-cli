@@ -1,11 +1,18 @@
 const util = require('util');
 const execAsync = util.promisify(require('child_process').exec);
 
+const BROWSER_CLASSES = ['chromium-browser', 'google-chrome', 'chrome', 'Chromium', 'Google-chrome'];
+
+function findBrowserWindow(clients) {
+  const lower = c => c.class.toLowerCase();
+  return clients.find(c => BROWSER_CLASSES.includes(lower(c)));
+}
+
 async function getChromiumWindowPos() {
   try {
     const { stdout } = await execAsync('hyprctl clients -j');
     const clients = JSON.parse(stdout);
-    const win = clients.find(c => c.class.toLowerCase() === 'chromium-browser');
+    const win = findBrowserWindow(clients);
     if (!win) return null;
     return { x: win.at[0], y: win.at[1], width: win.size[0], height: win.size[1] };
   } catch (err) {
@@ -15,7 +22,12 @@ async function getChromiumWindowPos() {
 
 async function focusChromiumWindow() {
   try {
-    await execAsync('hyprctl dispatch focuswindow class:Chromium-browser');
+    const { stdout } = await execAsync('hyprctl clients -j');
+    const clients = JSON.parse(stdout);
+    const win = findBrowserWindow(clients);
+    if (win) {
+      await execAsync('hyprctl dispatch focuswindow class:' + win.class);
+    }
   } catch (_) {}
 }
 
