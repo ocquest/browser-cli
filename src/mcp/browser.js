@@ -37,6 +37,55 @@ class BrowserManager {
     this.activePage = null;
     this.ready = false;
     this._lastSnapshot = null;
+    this._preActionState = null;
+  }
+
+  async captureInteractiveState(page) {
+    try {
+      return await page.evaluate(() => {
+        const interactive = [];
+        const selectors = 'a[href], button, input:not([type=hidden]), textarea, select, [role="button"], [role="link"]';
+        const elements = document.querySelectorAll(selectors);
+        let idCounter = 0;
+        const seen = new Set();
+        for (const el of elements) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue;
+          const tag = el.tagName.toLowerCase();
+          const text = (el.textContent || '').trim().substring(0, 60);
+          const aria = el.getAttribute('aria-label') || '';
+          const label = (text || aria).substring(0, 60);
+          const key = tag + '|' + label;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          interactive.push({ id: ++idCounter, tag, label, inViewport: rect.y < window.innerHeight });
+        }
+        const modals = [];
+        const dialogs = document.querySelectorAll('[role="dialog"], [role="alertdialog"], [class*="modal"], [class*="overlay"]');
+        for (const d of dialogs) {
+          if (d.offsetParent !== null) {
+            const t = (d.textContent || '').trim().substring(0, 100);
+            if (t && !modals.some(m => m.text === t)) modals.push({ type: d.getAttribute('role') === 'dialog' ? 'dialog' : 'overlay', text: t });
+          }
+        }
+        return { url: window.location.href, interactive: interactive.slice(0, 200), modals };
+      });
+    } catch { return null; }
+  }
+
+  diffInteractiveState(before, after) {
+    if (!before || !after) return null;
+    const changed = {};
+    if (before.url !== after.url) { changed.url_changed = true; changed.url = { from: before.url, to: after.url }; }
+    const beforeIds = new Set(before.interactive.map(i => i.id));
+    const afterIds = new Set(after.interactive.map(i => i.id));
+    const added = after.interactive.filter(i => !beforeIds.has(i.id));
+    const removed = before.interactive.filter(i => !afterIds.has(i.id));
+    if (added.length) changed.added = added.slice(0, 15).map(i => ({ id: i.id, tag: i.tag, label: i.label }));
+    if (removed.length) changed.removed = removed.slice(0, 15).map(i => ({ id: i.id, tag: i.tag, label: i.label }));
+    const newModals = after.modals.filter(m => !before.modals.some(b => b.text === m.text));
+    if (newModals.length) changed.new_modals = newModals;
+    return Object.keys(changed).length ? changed : null;
   }
 
   async launch(userDataDir) {
@@ -695,6 +744,60 @@ class BrowserManager {
     }
     await page.waitForSelector(selector, { timeout: timeoutMs });
     return await page.$(selector);
+  }
+
+  async waitForAny(conditions, timeoutMs = 10000) {
+    const page = this.getActivePage();
+    if (!page) throw new Error('No active page');
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      for (let i = 0; i < conditions.length; i++) {
+        const c = conditions[i];
+        try {
+          if (c.type === 'selector') {
+            const el = await page.$(c.arg);
+            if (el) return { condition_met: i, type: 'selector', detail: `Element "${c.arg}" found` };
+          } else if (c.type === 'url_match') {
+            const currentUrl = page.url();
+            if (currentUrl.includes(c.arg)) return { condition_met: i, type: 'url_match', detail: `URL matches "${c.arg}"` };
+          } else if (c.type === 'text') {
+            const body = await page.evaluate(() => document.body.innerText);
+            if (body.toLowerCase().includes(c.arg.toLowerCase())) return { condition_met: i, type: 'text', detail: `Text "${c.arg}" found` };
+          } else if (c.type === 'modal') {
+            const modals = await this.detectModals(page);
+            if (modals.some(m => m.text.toLowerCase().includes(c.arg.toLowerCase()))) return { condition_met: i, type: 'modal', detail: `Modal matching "${c.arg}"` };
+          } else if (c.type === 'removed') {
+            const el = await page.$(c.arg);
+            if (!el) return { condition_met: i, type: 'removed', detail: `Element "${c.arg}" removed from DOM` };
+          }
+        } catch {}
+      }
+      await sleep(100);
+    }
+    return { condition_met: -1, type: 'timeout', detail: `No condition met within ${timeoutMs}ms` };
+  }
+
+  async waitForStableDOM(timeoutMs = 5000) {
+    const page = this.getActivePage();
+    if (!page) return;
+    try {
+      await page.evaluate((t) => {
+        return new Promise((resolve) => {
+          const deadline = Date.now() + t;
+          let timer;
+          const observer = new MutationObserver(() => {
+            clearTimeout(timer);
+            timer = setTimeout(check, 300);
+          });
+          function check() {
+            if (Date.now() >= deadline) { observer.disconnect(); resolve(); return; }
+            observer.observe(document.body, { childList: true, subtree: true, attributes: false, characterData: false });
+            timer = setTimeout(() => { observer.disconnect(); resolve(); }, 300);
+          }
+          check();
+        });
+      }, timeoutMs);
+    } catch {}
   }
 }
 

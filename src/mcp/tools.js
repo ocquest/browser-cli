@@ -11,6 +11,19 @@ const z = require('zod').z;
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+async function captureDiff() {
+  const page = _browser.getActivePage();
+  if (!page) return null;
+  const before = await _browser.captureInteractiveState(page).catch(() => null);
+  return {
+    before,
+    async after() {
+      const a = await _browser.captureInteractiveState(page).catch(() => null);
+      return _browser.diffInteractiveState(before, a);
+    }
+  };
+}
+
 const CALIBRATION_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -62,12 +75,14 @@ function register(server, browser) {
       inputSchema: z.object({ url: z.string().describe('The URL to navigate to') })
     },
     async ({ url }) => {
+      const diff = await captureDiff();
       const page = browser.getActivePage();
       if (!page) throw new Error('No active page');
       await page.goto(url, { timeout: 30000 });
       state.record('navigate', { url });
       const info = await browser.getPageInfo(page);
-      return { content: [{ type: 'text', text: JSON.stringify(info) }] };
+      const changed = await diff.after();
+      return { content: [{ type: 'text', text: JSON.stringify({ ...info, changed }) }] };
     }
   );
 
@@ -78,10 +93,12 @@ function register(server, browser) {
       inputSchema: z.object({})
     },
     async () => {
+      const diff = await captureDiff();
       const page = browser.getActivePage();
       await page.goBack();
       state.record('go-back');
-      return { content: [{ type: 'text', text: 'Navigated back' }] };
+      const changed = await diff.after();
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, action: 'go-back', changed }) }] };
     }
   );
 
@@ -92,10 +109,12 @@ function register(server, browser) {
       inputSchema: z.object({})
     },
     async () => {
+      const diff = await captureDiff();
       const page = browser.getActivePage();
       await page.goForward();
       state.record('go-forward');
-      return { content: [{ type: 'text', text: 'Navigated forward' }] };
+      const changed = await diff.after();
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, action: 'go-forward', changed }) }] };
     }
   );
 
@@ -106,10 +125,12 @@ function register(server, browser) {
       inputSchema: z.object({})
     },
     async () => {
+      const diff = await captureDiff();
       const page = browser.getActivePage();
       await page.reload();
       state.record('reload');
-      return { content: [{ type: 'text', text: 'Page reloaded' }] };
+      const changed = await diff.after();
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, action: 'reload', changed }) }] };
     }
   );
 
@@ -124,6 +145,7 @@ function register(server, browser) {
       })
     },
     async ({ selector, wait_until }) => {
+      const diff = await captureDiff();
       await browser.ensureClickable(selector);
       const pos = await browser.getElementScreenPos(selector);
       await hyprctl.focusChromiumWindow();
@@ -136,7 +158,8 @@ function register(server, browser) {
         await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
       }
       state.record('yclick', { selector, x: pos.screenX, y: pos.screenY });
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, x: pos.screenX, y: pos.screenY }) }] };
+      const changed = await diff.after();
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, x: pos.screenX, y: pos.screenY, changed }) }] };
     }
   );
 
@@ -150,6 +173,7 @@ function register(server, browser) {
       })
     },
     async ({ selector, wait_until }) => {
+      const diff = await captureDiff();
       const page = browser.getActivePage();
       const modals = await browser.detectModals(page);
       if (modals.length) await browser.autoDismissBlockers(page);
@@ -160,7 +184,8 @@ function register(server, browser) {
         await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
       }
       state.record('click', { selector });
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
+      const changed = await diff.after();
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, changed }) }] };
     }
   );
 
@@ -174,6 +199,7 @@ function register(server, browser) {
       })
     },
     async ({ from, to }) => {
+      const diff = await captureDiff();
       const fromPos = await browser.getElementScreenPos(from);
       const toPos = await browser.getElementScreenPos(to);
       await hyprctl.focusChromiumWindow();
@@ -186,7 +212,8 @@ function register(server, browser) {
       await sleep(80);
       await execAsync('ydotool click 0x80');
       state.record('ydrag', { from, to });
-      return { content: [{ type: 'text', text: 'ok' }] };
+      const changed = await diff.after();
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, changed }) }] };
     }
   );
 
@@ -202,6 +229,7 @@ function register(server, browser) {
       })
     },
     async ({ selector, text, submit }) => {
+      const diff = await captureDiff();
       const page = browser.getActivePage();
       const modals = await browser.detectModals(page);
       if (modals.length) await browser.autoDismissBlockers(page);
@@ -210,7 +238,8 @@ function register(server, browser) {
       await element.fill(text);
       if (submit) await page.keyboard.press('Enter');
       state.record('fill', { selector, submit: !!submit });
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, submit }) }] };
+      const changed = await diff.after();
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, submit, changed }) }] };
     }
   );
 
@@ -224,11 +253,13 @@ function register(server, browser) {
       })
     },
     async ({ selector, secret }) => {
+      const diff = await captureDiff();
       const page = browser.getActivePage();
       await page.fill(selector, secret);
       state.addSecret(secret);
       state.record('fill-secret', { selector });
-      return { content: [{ type: 'text', text: 'ok' }] };
+      const changed = await diff.after();
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, changed }) }] };
     }
   );
 
@@ -244,6 +275,7 @@ function register(server, browser) {
       })
     },
     async ({ selector, text, precise, submit }) => {
+      const diff = await captureDiff();
       const page = browser.getActivePage();
       const { element } = await browser.findElement(selector);
       if (!element) throw new Error('Element not found: ' + selector);
@@ -258,7 +290,8 @@ function register(server, browser) {
       }
       if (submit) await page.keyboard.press('Enter');
       state.record('type', { selector, precise: !!precise, submit: !!submit });
-      return { content: [{ type: 'text', text: 'ok' }] };
+      const changed = await diff.after();
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, changed }) }] };
     }
   );
 
@@ -271,12 +304,14 @@ function register(server, browser) {
       })
     },
     async ({ key }) => {
+      const diff = await captureDiff();
       const page = browser.getActivePage();
       const modals = await browser.detectModals(page);
       if (modals.length) await browser.autoDismissBlockers(page);
       await page.keyboard.press(key);
       state.record('press', { key });
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, key }) }] };
+      const changed = await diff.after();
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, key, changed }) }] };
     }
   );
 
@@ -290,6 +325,7 @@ function register(server, browser) {
       })
     },
     async ({ selector, value }) => {
+      const diff = await captureDiff();
       const page = browser.getActivePage();
       const { element } = await browser.findElement(selector);
       if (!element) throw new Error('Element not found: ' + selector);
@@ -304,7 +340,8 @@ function register(server, browser) {
         else throw new Error('Option not found: ' + value);
       }
       state.record('select', { selector, value });
-      return { content: [{ type: 'text', text: 'ok' }] };
+      const changed = await diff.after();
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, changed }) }] };
     }
   );
 
@@ -544,6 +581,25 @@ function register(server, browser) {
       await browser.waitForElement(selector, timeout);
       state.record('wait-for', { selector, timeout });
       return { content: [{ type: 'text', text: `Element "${selector}" appeared` }] };
+    }
+  );
+
+  server.registerTool(
+    'browser_wait_for_any',
+    {
+      description: 'Wait until any of multiple conditions is met. Each condition can be: selector (CSS), url_match (text in URL), text (page text), modal (modal content), removed (element removed). Returns which condition triggered first.',
+      inputSchema: z.object({
+        conditions: z.array(z.object({
+          type: z.enum(['selector', 'url_match', 'text', 'modal', 'removed']).describe('Type of condition to check'),
+          arg: z.string().describe('Argument: CSS selector, URL substring, text to find, modal text, or element to wait for removal')
+        })).describe('Array of conditions. First one met wins.'),
+        timeout: z.number().optional().default(10000).describe('Timeout in ms (default 10000)')
+      })
+    },
+    async ({ conditions, timeout }) => {
+      const result = await browser.waitForAny(conditions, timeout);
+      state.record('wait-for-any', { count: conditions.length, result: result.type });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
 
@@ -858,9 +914,23 @@ function register(server, browser) {
 
       const stepResults = [];
 
+      const needsStableWait = async (action, args, flags) => {
+        if (action === 'goto') return true;
+        if (action === 'click') {
+          try {
+            const { element } = await browser.findElement(args[0]);
+            const tag = await element.evaluate(el => el.tagName.toLowerCase());
+            return tag === 'a';
+          } catch { return false; }
+        }
+        if ((action === 'fill' || action === 'type') && flags.submit) return true;
+        return false;
+      };
+
       for (const step of parsedSteps) {
         const { action, args, flags } = step;
         const entry = { action, args: [...args], flags };
+        const willNavigate = await needsStableWait(action, args, flags).catch(() => false);
         switch (action) {
           case 'goto':
             await page.goto(args[0], { timeout: 30000 });
@@ -917,6 +987,8 @@ function register(server, browser) {
           case 'wait':
             if (args[0] === 'networkidle') {
               await page.waitForLoadState('networkidle', { timeout: 30000 });
+            } else if (args[0] === 'stable') {
+              await browser.waitForStableDOM(5000);
             } else if (args[0] === 'selector' && args[1]) {
               await page.waitForSelector(args[1], { timeout: 30000 });
             } else {
@@ -969,6 +1041,9 @@ function register(server, browser) {
             break;
           default:
             throw new Error('Unknown chain action: ' + action);
+        }
+        if (willNavigate) {
+          await browser.waitForStableDOM(5000).catch(() => {});
         }
         stepResults.push(entry);
       }
