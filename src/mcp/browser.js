@@ -51,7 +51,8 @@ class BrowserManager {
         '--disable-session-crashed-bubble',
         '--disable-features=SessionCrashedBubble,InfiniteSessionRestore',
         '--disable-automation',
-        '--disable-blink-features=AutomationControlled'
+        '--disable-blink-features=AutomationControlled',
+        '--no-proxy-server'
       ],
       ignoreDefaultArgs: ['--enable-automation'],
       proxy: proxyConfig.server
