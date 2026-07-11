@@ -8,6 +8,28 @@ const prompts = require('./src/mcp/prompts');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const util = require('util');
+const execAsync = util.promisify(require('child_process').exec);
+const { spawn } = require('child_process');
+
+async function ensureYdotoold() {
+  try {
+    await execAsync('pgrep ydotoold');
+    return;
+  } catch {}
+  const trySpawn = (cmd, args) => {
+    return new Promise((resolve) => {
+      const child = spawn(cmd, args || [], { detached: true, stdio: 'ignore' });
+      child.on('error', () => resolve(false));
+      child.unref();
+      setTimeout(() => resolve(true), 500);
+    });
+  };
+  const ok = await trySpawn('ydotoold') || await trySpawn('sudo', ['ydotoold']);
+  if (!ok) {
+    console.error('Warning: could not start ydotoold. ydotool commands will fail.');
+  }
+}
 
 async function main() {
   const args = process.argv.slice(2);
@@ -15,6 +37,8 @@ async function main() {
   fs.writeFileSync(pidFile, String(process.pid));
 
   const state = require('./src/daemon/services/state');
+
+  await ensureYdotoold();
 
   const browser = new BrowserManager();
   await browser.launch();
