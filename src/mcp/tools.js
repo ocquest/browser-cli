@@ -117,10 +117,13 @@ function register(server, browser) {
   server.registerTool(
     'browser_click',
     {
-      description: 'Click an element using ydotool (system-level, undetectable). Provide a CSS selector or numeric ID from view_tree/observe.',
-      inputSchema: z.object({ selector: z.string().describe('CSS selector or numeric element ID') })
+      description: 'Click an element using ydotool (system-level, undetectable). Provide a CSS selector or numeric ID. Set wait_until="networkidle" to auto-wait for page load after click.',
+      inputSchema: z.object({
+        selector: z.string().describe('CSS selector or numeric element ID'),
+        wait_until: z.enum(['none', 'networkidle']).optional().default('none').describe('If "networkidle", waits for page to finish loading after click')
+      })
     },
-    async ({ selector }) => {
+    async ({ selector, wait_until }) => {
       await browser.ensureClickable(selector);
       const pos = await browser.getElementScreenPos(selector);
       await hyprctl.focusChromiumWindow();
@@ -128,6 +131,10 @@ function register(server, browser) {
       await ydotool.naturalMouseMove(pos.screenX, pos.screenY, hyprctl.getCursorPos);
       await sleep(60 + Math.round(Math.random() * 30));
       await execAsync('ydotool click C0');
+      if (wait_until === 'networkidle') {
+        const page = browser.getActivePage();
+        await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+      }
       state.record('yclick', { selector, x: pos.screenX, y: pos.screenY });
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true, x: pos.screenX, y: pos.screenY }) }] };
     }
@@ -136,16 +143,22 @@ function register(server, browser) {
   server.registerTool(
     'browser_click_pw',
     {
-      description: 'Click an element using Playwright (detectable by anti-bot systems). Use only if browser_click fails. Also accepts numeric IDs from observe/view_tree.',
-      inputSchema: z.object({ selector: z.string().describe('CSS selector or numeric element ID') })
+      description: 'Click an element using Playwright (detectable by anti-bot systems). Use only if browser_click fails. Accepts numeric IDs or CSS selectors. Set wait_until="networkidle" to auto-wait for page load.',
+      inputSchema: z.object({
+        selector: z.string().describe('CSS selector or numeric element ID'),
+        wait_until: z.enum(['none', 'networkidle']).optional().default('none').describe('If "networkidle", waits for page to finish loading after click')
+      })
     },
-    async ({ selector }) => {
+    async ({ selector, wait_until }) => {
       const page = browser.getActivePage();
       const modals = await browser.detectModals(page);
       if (modals.length) await browser.autoDismissBlockers(page);
       const { element } = await browser.findElement(selector);
       if (!element) throw new Error('Element not found: ' + selector);
       await element.click();
+      if (wait_until === 'networkidle') {
+        await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+      }
       state.record('click', { selector });
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
     }
@@ -181,19 +194,23 @@ function register(server, browser) {
   server.registerTool(
     'browser_fill',
     {
-      description: 'Fill a form field using Playwright (fast, detectable). For stealth use browser_type.',
+      description: 'Fill a form field using Playwright (fast, detectable). Accepts numeric IDs or CSS selectors. Use submit=true to press Enter after filling.',
       inputSchema: z.object({
-        selector: z.string().describe('CSS selector of the input/textarea'),
-        text: z.string().describe('Text to fill')
+        selector: z.string().describe('CSS selector or numeric element ID of the input/textarea'),
+        text: z.string().describe('Text to fill'),
+        submit: z.boolean().optional().default(false).describe('If true, presses Enter after filling (useful for search boxes)')
       })
     },
-    async ({ selector, text }) => {
+    async ({ selector, text, submit }) => {
       const page = browser.getActivePage();
       const modals = await browser.detectModals(page);
       if (modals.length) await browser.autoDismissBlockers(page);
-      await page.fill(selector, text);
-      state.record('fill', { selector });
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
+      const { element } = await browser.findElement(selector);
+      if (!element) throw new Error('Element not found: ' + selector);
+      await element.fill(text);
+      if (submit) await page.keyboard.press('Enter');
+      state.record('fill', { selector, submit: !!submit });
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, submit }) }] };
     }
   );
 
@@ -218,21 +235,19 @@ function register(server, browser) {
   server.registerTool(
     'browser_type',
     {
-      description: 'Type text into a field with human-like behavior (typos, bursts, pauses). Slower but undetectable.',
+      description: 'Type text into a field with human-like behavior (typos, bursts, pauses). Slower but undetectable. Accepts numeric IDs or CSS selectors.',
       inputSchema: z.object({
-        selector: z.string().describe('CSS selector of the input'),
+        selector: z.string().describe('CSS selector or numeric element ID of the input'),
         text: z.string().describe('Text to type'),
-        precise: z.boolean().optional().describe('If true, type without human-like errors')
+        precise: z.boolean().optional().describe('If true, type without human-like errors'),
+        submit: z.boolean().optional().default(false).describe('If true, presses Enter after typing')
       })
     },
-    async ({ selector, text, precise }) => {
+    async ({ selector, text, precise, submit }) => {
       const page = browser.getActivePage();
-      const found = await page.evaluate((sel) => {
-        const el = document.querySelector(sel);
-        if (el) { el.value = ''; el.focus(); return true; }
-        return false;
-      }, selector);
-      if (!found) throw new Error('Element not found: ' + selector);
+      const { element } = await browser.findElement(selector);
+      if (!element) throw new Error('Element not found: ' + selector);
+      await element.evaluate(el => { el.value = ''; el.focus(); });
       if (precise) {
         for (const ch of text) {
           await page.keyboard.type(ch);
@@ -241,7 +256,8 @@ function register(server, browser) {
       } else {
         await browser.humanType(page, selector, text);
       }
-      state.record('type', { selector, precise: !!precise });
+      if (submit) await page.keyboard.press('Enter');
+      state.record('type', { selector, precise: !!precise, submit: !!submit });
       return { content: [{ type: 'text', text: 'ok' }] };
     }
   );
@@ -267,15 +283,26 @@ function register(server, browser) {
   server.registerTool(
     'browser_select',
     {
-      description: 'Select an option in a <select> dropdown',
+      description: 'Select an option in a <select> dropdown. Accepts numeric IDs or CSS selectors.',
       inputSchema: z.object({
-        selector: z.string().describe('CSS selector of the select element'),
+        selector: z.string().describe('CSS selector or numeric element ID of the select element'),
         value: z.string().describe('Value or label of the option to select')
       })
     },
     async ({ selector, value }) => {
       const page = browser.getActivePage();
-      await page.selectOption(selector, value);
+      const { element } = await browser.findElement(selector);
+      if (!element) throw new Error('Element not found: ' + selector);
+      const tag = await element.evaluate(el => el.tagName.toLowerCase());
+      if (tag === 'select') {
+        await element.selectOption(value);
+      } else {
+        await element.click();
+        await sleep(300);
+        const opt = await page.$(`option[value="${value}"], option:has-text("${value}")`);
+        if (opt) await opt.click();
+        else throw new Error('Option not found: ' + value);
+      }
       state.record('select', { selector, value });
       return { content: [{ type: 'text', text: 'ok' }] };
     }
@@ -285,15 +312,17 @@ function register(server, browser) {
   server.registerTool(
     'browser_observe',
     {
-      description: 'Get a structured snapshot of the current page: URL, title, viewport, scroll position, interactive elements (up to 400), text (up to 20000 chars), and detected modals. Set cleanText=true to get deduplicated text from visible elements only.',
+      description: 'Get a structured snapshot of the current page. Modes: "normal" (default, 20K chars), "minimal" (only headings+buttons+links, low token), "full" (unlimited text). Set maxChars to override text limit. Set maxInteractive to limit elements count.',
       inputSchema: z.object({
-        cleanText: z.boolean().optional().default(false).describe('If true, returns deduplicated text from visible headings, paragraphs, list items, buttons, links only (excludes hidden/duplicate text)')
+        mode: z.enum(['normal', 'minimal', 'full']).optional().default('normal').describe('"minimal" for low-token snapshot (headings+buttons+links only), "normal" for default (up to maxChars), "full" for all text'),
+        maxChars: z.number().optional().default(20000).describe('Maximum characters of text to return (default 20000, only used in normal mode)'),
+        maxInteractive: z.number().optional().default(400).describe('Maximum interactive elements to return (default 400)')
       })
     },
-    async ({ cleanText }) => {
+    async ({ mode, maxChars, maxInteractive }) => {
       const page = browser.getActivePage();
-      const result = await browser.observe(page, cleanText);
-      state.record('observe');
+      const result = await browser.observe(page, { mode, maxChars, maxInteractive });
+      state.record('observe', { mode });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
@@ -301,19 +330,20 @@ function register(server, browser) {
   server.registerTool(
     'browser_view_tree',
     {
-      description: 'Get the DOM/accessibility tree with numeric node IDs and CSS selectors. Can filter by role, tag, text match, and max depth.',
+      description: 'Get the DOM/accessibility tree with numeric node IDs and CSS selectors. Default max_depth=5 to save tokens. Use section to scope to a container (e.g. "#product-list", ".main-content").',
       inputSchema: z.object({
         role: z.string().optional().describe('Filter by ARIA role (e.g., "button,link")'),
         tag: z.string().optional().describe('Filter by tag name (e.g., "button,input,a")'),
         match: z.string().optional().describe('Filter by text content match'),
-        max_depth: z.number().optional().describe('Maximum tree depth'),
+        max_depth: z.number().optional().describe('Maximum tree depth (default 5)'),
+        section: z.string().optional().describe('CSS selector to scope the tree to a specific container (e.g. "#product-grid", ".main")'),
         only_matches: z.boolean().optional().describe('Only show nodes matching filters')
       })
     },
-    async ({ role, tag, match, max_depth, only_matches }) => {
+    async ({ role, tag, match, max_depth, section, only_matches }) => {
       const page = browser.getActivePage();
-      const treeText = await browser.viewTree(page, { role, tag, match, maxDepth: max_depth, onlyMatches: only_matches });
-      state.record('view-tree', { role, tag, match, maxDepth: max_depth });
+      const treeText = await browser.viewTree(page, { role, tag, match, maxDepth: max_depth, section, onlyMatches: only_matches });
+      state.record('view-tree', { role, tag, match, maxDepth: max_depth, section });
       return { content: [{ type: 'text', text: treeText }] };
     }
   );
@@ -401,6 +431,67 @@ function register(server, browser) {
       const page = browser.getActivePage();
       const info = await browser.getPageInfo(page);
       return { content: [{ type: 'text', text: JSON.stringify(info) }] };
+    }
+  );
+
+  // ── Advanced Observation ────────────────────────────────
+  server.registerTool(
+    'browser_snapshot',
+    {
+      description: 'Extract structured data from a container element (e.g. product grid, table, list). Returns all items with text, href, tag, and viewport info.',
+      inputSchema: z.object({
+        selector: z.string().describe('CSS selector of the container element (e.g. "#product-grid", ".product-list")')
+      })
+    },
+    async ({ selector }) => {
+      const page = browser.getActivePage();
+      const result = await browser.snapshot(page, selector);
+      state.record('snapshot', { selector, count: result.itemCount });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  server.registerTool(
+    'browser_diff',
+    {
+      description: 'Compare current page state with the last browser_observe snapshot. Shows URL changes, new/removed interactive elements. Call browser_observe() first to establish a baseline.',
+      inputSchema: z.object({})
+    },
+    async () => {
+      const result = await browser.diff();
+      state.record('diff');
+      return { content: [{ type: 'text', text: JSON.stringify(result.changes) }] };
+    }
+  );
+
+  server.registerTool(
+    'browser_wait_for',
+    {
+      description: 'Wait for an element to appear on the page. Accepts numeric IDs or CSS selectors. Polls until found or timeout.',
+      inputSchema: z.object({
+        selector: z.string().describe('CSS selector or numeric element ID to wait for'),
+        timeout: z.number().optional().default(30000).describe('Maximum time to wait in ms (default 30000)')
+      })
+    },
+    async ({ selector, timeout }) => {
+      await browser.waitForElement(selector, timeout);
+      state.record('wait-for', { selector, timeout });
+      return { content: [{ type: 'text', text: `Element "${selector}" appeared` }] };
+    }
+  );
+
+  server.registerTool(
+    'browser_hover',
+    {
+      description: 'Hover over an element. Useful for triggering dropdown menus, tooltips, or hover effects. Accepts numeric IDs or CSS selectors.',
+      inputSchema: z.object({
+        selector: z.string().describe('CSS selector or numeric element ID to hover over')
+      })
+    },
+    async ({ selector }) => {
+      await browser.hover(selector);
+      state.record('hover', { selector });
+      return { content: [{ type: 'text', text: 'ok' }] };
     }
   );
 

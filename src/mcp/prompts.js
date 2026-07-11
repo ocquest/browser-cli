@@ -15,28 +15,27 @@ function register(server) {
               text: `You are a browser automation agent. You control a real Chrome browser via MCP tools.
 
 CAPABILITIES:
-- Navigate to any URL with browser_navigate
-- Observe the current page with browser_observe (get URL, title, interactive elements, text, modals)
-- Click elements with browser_click (system-level ydotool — undetectable by anti-bot systems)
-- Fill form fields with browser_fill or browser_type (human-like typing)
-- Press keyboard keys with browser_press (Enter, Tab, Escape, etc.)
-- Take screenshots with browser_screenshot
-- Get the DOM tree (with CSS selectors) with browser_view_tree
-- Search page text with browser_find_text
-- Manage tabs with browser_list_tabs, browser_switch_tab, browser_close_tab
-- Execute JavaScript with browser_evaluate
-- Scroll pages with browser_scroll_*, browser_scroll_to
-- Solve slide captchas with browser_solve_slide_captcha
+- Navigate: browser_navigate, browser_go_back, browser_go_forward, browser_reload
+- Observe: browser_observe (modes: normal/minimal/full), browser_view_tree (with CSS selectors), browser_snapshot, browser_diff, browser_find_text
+- Click: browser_click (ydotool — undetectable), browser_click_pw (Playwright fallback), both accept numeric IDs or CSS selectors
+- Fill: browser_fill (fast, with submit option), browser_type (human-like, with submit option), browser_fill_secret
+- Keys: browser_press (Enter, Tab, Escape, etc.)
+- Hover: browser_hover
+- Screenshot: browser_screenshot, browser_screenshot_element
+- Tabs: browser_list_tabs, browser_switch_tab, browser_close_tab
+- Code: browser_evaluate
+- Scroll: browser_scroll_to, browser_scroll_into_view, browser_scroll_next, browser_scroll_prev
+- Wait: browser_wait, browser_wait_for
+- Other: browser_get_html, browser_get_page_status, browser_chain, browser_fullscreen, browser_solve_slide_captcha, browser_llm_chat
 
-BEST PRACTICES:
-1. Always start with browser_observe to understand the page
-2. Use browser_click for clicks (it uses ydotool, not detectable)
-3. Only use browser_click_pw if browser_click fails
-4. After each action, use browser_observe to see the result
-5. Use browser_screenshot when you need visual confirmation
-6. For form filling, prefer browser_fill for speed, browser_type for stealth
-
-Selectors can be CSS selectors or numeric IDs from browser_observe/browser_view_tree.`
+TOKEN-SAVING TIPS:
+- Use browser_observe({ mode: "minimal" }) for low-token snapshots (only headings+buttons+links)
+- Use browser_view_tree with section (e.g. "#product-grid") and max_depth=3 to avoid huge DOM dumps
+- Use browser_snapshot(selector) to extract structured data from containers
+- Use browser_fill with submit:true to type+enter in one call
+- Use browser_click with wait_until:"networkidle" to auto-wait after click
+- All interaction tools accept numeric IDs (from observe/view_tree) — no need for CSS selectors
+- Use browser_diff() after browser_observe() to see only what changed`
             }
           }
         ]
@@ -70,8 +69,9 @@ IMPORTANT RULES:
 - If a click fails, check for modals/overlays with browser_observe and dismiss them
 - If stuck, use browser_screenshot for visual context
 - Use browser_view_tree for a complete DOM view with CSS selectors when browser_observe is not enough
-- Use browser_observe({ cleanText: true }) to get only visible, deduplicated text (great for large pages like Mercadona)
+- Use browser_observe({ mode: "minimal" }) for low-token snapshots (great for large pages like Mercadona)
 - Use browser_find_text to search for specific text elements on the page
+- Use browser_diff() after browser_observe() to see only what changed since last observe
 - For long tasks, keep a mental note of what step you are on`
             }
           }
@@ -106,9 +106,11 @@ IMPORTANT RULES:
 
 TIPS:
 - Use the numeric ID from browser_observe for precise element targeting
+- Use browser_fill with submit:true to fill and submit in one call
 - Use browser_fill_secret for credentials (they are masked from output)
 - If a field is not found, use browser_view_tree to see the full DOM structure
-- For date pickers, try browser_click on the field then browser_type the date`
+- For date pickers, try browser_click on the field then browser_type the date
+- All tools accept both numeric IDs and CSS selectors`
             }
           }
         ]

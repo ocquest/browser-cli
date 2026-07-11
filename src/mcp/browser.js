@@ -36,6 +36,7 @@ class BrowserManager {
     this.pages = [];
     this.activePage = null;
     this.ready = false;
+    this._lastSnapshot = null;
   }
 
   async launch(userDataDir) {
@@ -157,44 +158,53 @@ class BrowserManager {
     return state.resolveSelector(selector);
   }
 
+  isNumericId(v) {
+    return !isNaN(v) && !isNaN(parseFloat(v)) && String(v).trim() !== '';
+  }
+
   async findElement(selector) {
     const page = this.getActivePage();
-    if (!page) throw new Error('No active page');
-    const isNumericId = !isNaN(selector) && !isNaN(parseFloat(selector));
-    if (!isNumericId) {
-      return { element: await page.$(selector), useXpath: false, selector };
-    }
-    try {
-      const xpath = await this.resolveSelector(selector);
+    if (!page) throw new Error('No active page. The browser tab may have been closed.');
+
+    if (this.isNumericId(selector)) {
+      try {
+        const xpath = await this.resolveSelector(selector);
+        if (xpath) {
+          const el = await page.$('xpath=' + xpath);
+          if (el) return { element: el, useXpath: true, selector: xpath };
+        }
+      } catch {}
+      const xpath = await page.evaluate((id) => {
+        function getXPath(node) {
+          if (node === document.body) return '/html/body';
+          if (node === document.documentElement) return '/html';
+          const parent = node.parentNode;
+          if (!parent) return '';
+          const siblings = Array.from(parent.childNodes).filter(n => n.nodeType === Node.ELEMENT_NODE);
+          const sameTag = siblings.filter(n => n.nodeName === node.nodeName);
+          const idx = sameTag.indexOf(node) + 1;
+          return getXPath(parent) + '/' + node.nodeName.toLowerCase() + '[' + idx + ']';
+        }
+        const selectors = 'a[href], button, input:not([type=hidden]), textarea, select, [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])';
+        const els = document.querySelectorAll(selectors);
+        let count = 0;
+        for (const el of els) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue;
+          if (rect.x > window.innerWidth + 50 || rect.y > window.innerHeight + 50) continue;
+          if (++count === parseInt(id)) return getXPath(el);
+        }
+        return null;
+      }, selector);
+      if (!xpath) throw new Error(`Numeric ID ${selector} not found. Run browser_observe() first to get fresh element IDs — they change after navigation.`);
       const el = await page.$('xpath=' + xpath);
-      if (el) return { element: el, useXpath: true, selector: xpath };
-    } catch {}
-    const xpath = await page.evaluate((id) => {
-      function getXPath(node) {
-        if (node === document.body) return '/html/body';
-        if (node === document.documentElement) return '/html';
-        const parent = node.parentNode;
-        if (!parent) return '';
-        const siblings = Array.from(parent.childNodes).filter(n => n.nodeType === Node.ELEMENT_NODE);
-        const sameTag = siblings.filter(n => n.nodeName === node.nodeName);
-        const idx = sameTag.indexOf(node) + 1;
-        return getXPath(parent) + '/' + node.nodeName.toLowerCase() + '[' + idx + ']';
-      }
-      const selectors = 'a[href], button, input:not([type=hidden]), textarea, select, [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])';
-      const els = document.querySelectorAll(selectors);
-      let count = 0;
-      for (const el of els) {
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
-        if (rect.x > window.innerWidth + 50 || rect.y > window.innerHeight + 50) continue;
-        if (++count === parseInt(id)) return getXPath(el);
-      }
-      return null;
-    }, selector);
-    if (!xpath) throw new Error(`Element not found for ID ${selector}`);
-    const el = await page.$('xpath=' + xpath);
-    if (!el) throw new Error(`Element not found for ID ${selector}`);
-    return { element: el, useXpath: true, selector: xpath };
+      if (!el) throw new Error(`Element for ID ${selector} exists but could not be selected. Try browser_observe() first to refresh.`);
+      return { element: el, useXpath: true, selector: xpath };
+    }
+
+    const el = await page.$(selector);
+    if (!el) throw new Error(`CSS selector "${selector}" not found. Try a numeric ID from browser_observe() instead, or verify the selector matches an element on the page.`);
+    return { element: el, useXpath: false, selector };
   }
 
   async ensureClickable(selector) {
@@ -250,7 +260,10 @@ class BrowserManager {
     }
 
     if (!check.clickable) {
-      throw new Error(`Cannot click element: ${check.reason}${check.coveringText ? ' ("' + check.coveringText + '")' : ''}`);
+      let msg = `Cannot click element. ${check.reason}`;
+      if (check.coveringText) msg += ` (covered by: "${check.coveringText}")`;
+      msg += '. Try browser_press("Escape") to dismiss modals, or use browser_observe() to check for overlays.';
+      throw new Error(msg);
     }
     return element;
   }
@@ -264,7 +277,7 @@ class BrowserManager {
     const box = await element.boundingBox();
     if (!box) throw new Error('Element has no bounding box (not visible?)');
     const windowPos = await hyprctl.getChromiumWindowPos();
-    if (!windowPos) throw new Error('No chromium-browser window found via hyprctl');
+    if (!windowPos) throw new Error('Chrome window not found on your desktop. browser_click (ydotool) needs a visible Chrome window managed by your window manager. Use browser_click_pw(selector) instead as a fallback — it works without a visible window.');
     const offset = state.getCalibrationOffset();
     const marginX = Math.max(2, box.width * 0.15);
     const marginY = Math.max(2, box.height * 0.15);
@@ -282,18 +295,21 @@ class BrowserManager {
   async detectModals(page) {
     try {
       return await page.evaluate(() => {
+        const seen = new Set();
         const warnings = [];
         const dialogs = document.querySelectorAll('[role="dialog"], [role="alertdialog"]');
         for (const d of dialogs) {
           if (d.offsetParent !== null) {
-            warnings.push({ type: 'dialog', text: (d.textContent || '').trim().substring(0, 200) });
+            const text = (d.textContent || '').trim().substring(0, 200);
+            if (text && !seen.has(text)) { seen.add(text); warnings.push({ type: 'dialog', text }); }
           }
         }
         const overlaySel = '[class*="overlay"], [class*="modal"], [class*="popup"], [class*="backdrop"], [class*="cookie"], [id*="cookie"], [class*="consent"]';
         const overlays = document.querySelectorAll(overlaySel);
         for (const o of overlays) {
           if (o.offsetParent !== null && o.getBoundingClientRect().width > 0) {
-            warnings.push({ type: 'overlay', text: (o.textContent || '').trim().substring(0, 200) });
+            const text = (o.textContent || '').trim().substring(0, 200);
+            if (text && !seen.has(text)) { seen.add(text); warnings.push({ type: 'overlay', text }); }
           }
         }
         return warnings;
@@ -413,9 +429,11 @@ class BrowserManager {
     }
   }
 
-  async observe(page, cleanText = false) {
-    const idToXPath = {};
-    const result = await page.evaluate((cleanText) => {
+  async observe(page, opts = {}) {
+    const mode = opts.mode || 'normal';
+    const maxChars = opts.maxChars || 20000;
+    const maxInteractive = opts.maxInteractive || 400;
+    const result = await page.evaluate(({ mode, maxChars, maxInteractive }) => {
       function getXPath(node) {
         if (node === document.body) return '/html/body';
         if (node === document.documentElement) return '/html';
@@ -444,7 +462,8 @@ class BrowserManager {
         const href = el.getAttribute('href') || '';
         const role = el.getAttribute('role') || '';
         const type = el.getAttribute('type') || '';
-        const label = (text || aria || placeholder || '').substring(0, 80);
+        let label = (text || aria || placeholder || '').substring(0, 120);
+        if (label.length >= 120) label = label.substring(0, 117) + '...';
         if (!label && !href && tag !== 'input' && tag !== 'textarea') continue;
         if (tag === 'a' && !href) continue;
         const key = tag + '|' + label + '|' + href;
@@ -460,35 +479,92 @@ class BrowserManager {
           inViewport: rect.y < window.innerHeight && rect.x < window.innerWidth
         });
       }
-      let pageText = document.body.innerText.trim();
-      if (cleanText) {
-        pageText = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, li, td, th, label, span, div:not(div div), button, a'))
+
+      let pageText = '';
+      if (mode === 'minimal') {
+        pageText = Array.from(document.querySelectorAll('h1, h2, h3, a[href], button, [role="button"], [role="link"], label, th, td'))
           .map(el => el.textContent.trim())
           .filter(t => t.length > 2)
           .filter((t, i, a) => a.indexOf(t) === i)
-          .join('\n');
+          .join(' · ');
+      } else if (mode === 'full') {
+        pageText = document.body.innerText.trim();
+      } else {
+        pageText = document.body.innerText.trim();
+        if (maxChars && maxChars < pageText.length) {
+          pageText = pageText.substring(0, maxChars) + '\n... (truncated at ' + maxChars + ' chars. Use mode: "full" or increase maxChars)';
+        }
       }
+
       return {
         url: window.location.href,
         title: document.title,
         viewport: { width: window.innerWidth, height: window.innerHeight },
         scrollY: window.scrollY,
         scrollH: document.body.scrollHeight,
-        interactive: interactive.slice(0, 400),
-        text: pageText.substring(0, 20000),
+        interactive: interactive.slice(0, maxInteractive),
+        text: pageText,
         xpathMap
       };
-    }, cleanText);
+    }, { mode, maxChars, maxInteractive });
     state.setIdToXPath(result.xpathMap || {});
     delete result.xpathMap;
     const modals = await this.detectModals(page);
     if (modals.length) result.modals = modals;
+    this._lastSnapshot = result;
     return result;
   }
 
+  async snapshot(page, selector) {
+    const { element } = await this.findElement(selector);
+    if (!element) throw new Error(`Element not found: ${selector}`);
+    const result = await page.evaluate((sel) => {
+      const container = document.querySelector(sel);
+      if (!container) return null;
+      const items = [];
+      const iterable = container.querySelectorAll('a, button, li, article, div[class*="product"], div[class*="item"], tr');
+      for (const el of iterable) {
+        const text = (el.textContent || '').trim().substring(0, 300);
+        const href = el.getAttribute('href') || '';
+        const tag = el.tagName.toLowerCase();
+        const rect = el.getBoundingClientRect();
+        const id = el.id || '';
+        const classes = el.className || '';
+        if (text.length > 5) {
+          items.push({ tag, text, href: href.substring(0, 500), id, classes: classes.substring(0, 100), inViewport: rect.y < window.innerHeight && rect.x < window.innerWidth });
+        }
+      }
+      return { containerTag: container.tagName.toLowerCase(), containerId: container.id, containerClasses: (container.className || '').substring(0, 200), itemCount: items.length, items: items.slice(0, 100) };
+    }, selector.indexOf(' ') >= 0 || selector.startsWith('#') || selector.startsWith('.') || selector.startsWith('[') ? selector : (() => { throw new Error('use valid css'); })());
+    if (!result) throw new Error(`Container not found for selector: ${selector}`);
+    return result;
+  }
+
+  async diff() {
+    const page = this.getActivePage();
+    if (!page) throw new Error('No active page');
+    const current = await this.observe(page, { mode: 'normal', maxChars: 50000 });
+    const prev = this._lastSnapshot;
+    if (!prev) return { current, changes: 'No previous snapshot. Call browser_observe() first to establish a baseline.' };
+    const changes = {};
+    if (prev.url !== current.url) changes.url = { from: prev.url, to: current.url };
+    if (prev.title !== current.title) changes.title = { from: prev.title, to: current.title };
+    if (prev.interactive.length !== current.interactive.length) changes.interactiveCount = { from: prev.interactive.length, to: current.interactive.length };
+    const prevIds = new Set(prev.interactive.map(i => i.id));
+    const currIds = new Set(current.interactive.map(i => i.id));
+    const newEls = current.interactive.filter(i => !prevIds.has(i.id));
+    const removedEls = prev.interactive.filter(i => !currIds.has(i.id));
+    if (newEls.length) changes.newElements = newEls.slice(0, 20).map(i => ({ id: i.id, label: i.label }));
+    if (removedEls.length) changes.removedElements = removedEls.slice(0, 20).map(i => ({ id: i.id, label: i.label }));
+    changes.urlChanged = prev.url !== current.url;
+    this._lastSnapshot = current;
+    return { current, changes };
+  }
+
   async viewTree(page, filters = {}) {
-    const { role: roleFilter, tag, match, maxDepth, onlyMatches } = filters;
-    const tree = await page.evaluate(({ role: roleFilter, tag, match, maxDepth, onlyMatches }) => {
+    const { role: roleFilter, tag, match, maxDepth, onlyMatches, section } = filters;
+    const effectiveMaxDepth = maxDepth || 5;
+    const tree = await page.evaluate(({ role: roleFilter, tag, match, maxDepth, onlyMatches, section }) => {
       const idToXPath = {};
       let idCounter = 0;
       function getXPath(node) {
@@ -529,7 +605,8 @@ class BrowserManager {
         if (maxDepth && depth > maxDepth) return null;
         const tagName = node.tagName.toLowerCase();
         const role = node.getAttribute('role') || '';
-        const name = node.textContent ? node.textContent.trim().substring(0, 80) : '';
+        const rawName = (node.textContent || '').trim();
+        const name = rawName.length > 50 ? rawName.substring(0, 47) + '...' : rawName;
         const id = ++idCounter;
         const xpath = getXPath(node);
         if (xpath) idToXPath[id] = xpath;
@@ -548,9 +625,12 @@ class BrowserManager {
         if (onlyMatches && !passes && children.length === 0) return null;
         return { line, passes, children, id };
       }
-      const root = buildTree(document.body, 0);
+      const rootEl = section ? document.querySelector(section) : document.body;
+      if (section && !rootEl) return { tree: null, idToXPath, error: `Section "${section}" not found` };
+      const root = buildTree(rootEl, 0);
       return { tree: root, idToXPath };
-    }, { role: roleFilter, tag, match, maxDepth, onlyMatches });
+    }, { role: roleFilter, tag, match, maxDepth: effectiveMaxDepth, onlyMatches, section });
+    if (tree.error) throw new Error(tree.error);
     state.setIdToXPath(tree.idToXPath);
     const result = tree.tree;
     function formatTree(node, prefix = '') {
@@ -565,6 +645,31 @@ class BrowserManager {
       return text;
     }
     return result ? formatTree(result) : '';
+  }
+
+  async hover(selector) {
+    const { element } = await this.findElement(selector);
+    if (!element) throw new Error(`Element not found: ${selector}`);
+    const page = this.getActivePage();
+    await element.hover();
+  }
+
+  async waitForElement(selector, timeoutMs = 30000) {
+    const page = this.getActivePage();
+    if (!page) throw new Error('No active page');
+    if (this.isNumericId(selector)) {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        try {
+          const { element } = await this.findElement(selector);
+          if (element) return element;
+        } catch {}
+        await sleep(200);
+      }
+      throw new Error(`Element ID ${selector} did not appear within ${timeoutMs}ms`);
+    }
+    await page.waitForSelector(selector, { timeout: timeoutMs });
+    return await page.$(selector);
   }
 }
 
