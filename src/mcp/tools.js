@@ -305,7 +305,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_click_pw',
     {
-      description: 'FALLBACK click — uses Playwright (detectable by anti-bot, but works without visible browser window). Use when browser_click fails with "Chrome window not found". Accepts numeric IDs or CSS selectors. Returns "changed" with added/removed elements. Set wait_until="networkidle" for navigation clicks.',
+      description: 'FALLBACK click — uses Playwright (detectable by anti-bot, but works without visible browser window). Use when browser_click fails with "Browser window not found". Accepts numeric IDs or CSS selectors. Returns "changed" with added/removed elements. Set wait_until="networkidle" for navigation clicks.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector or numeric element ID'),
         wait_until: z.enum(['none', 'networkidle']).optional().default('none').describe('If "networkidle", waits for page to finish loading after click')
