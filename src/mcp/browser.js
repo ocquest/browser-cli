@@ -1,6 +1,8 @@
 const { launchOptions: getCamoufoxOpts } = require('camoufox-js');
 const { firefox } = require('playwright');
 
+const FF_PATH = firefox.executablePath();
+
 const fs = require('fs');
 const util = require('util');
 const execAsync = util.promisify(require('child_process').exec);
@@ -98,6 +100,7 @@ class BrowserManager {
       humanize: true,
       'humanize:maxTime': 1.5,
       'humanize:minTime': 0.3,
+      executable_path: FF_PATH,
     });
     const launchOptions = {
       ...camoufoxOpts,
