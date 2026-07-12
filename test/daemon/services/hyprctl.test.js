@@ -6,22 +6,22 @@ describe('hyprctl service', () => {
 
   it('should load without error', () => {
     hyprctl = require('../../../src/daemon/services/hyprctl');
-    assert.ok(hyprctl.getChromiumWindowPos);
-    assert.ok(hyprctl.focusChromiumWindow);
+    assert.ok(hyprctl.getBrowserWindowPos);
+    assert.ok(hyprctl.focusBrowserWindow);
     assert.ok(hyprctl.getCursorPos);
   });
 
-  describe('getChromiumWindowPos', () => {
+  describe('getBrowserWindowPos', () => {
     it('should return null when hyprctl command fails', async () => {
       // This will fail because hyprctl is not available in test env
-      const result = await hyprctl.getChromiumWindowPos();
+      const result = await hyprctl.getBrowserWindowPos();
       assert.equal(result, null);
     });
   });
 
-  describe('focusChromiumWindow', () => {
+  describe('focusBrowserWindow', () => {
     it('should not throw when hyprctl is unavailable', async () => {
-      await assert.doesNotReject(hyprctl.focusChromiumWindow());
+      await assert.doesNotReject(hyprctl.focusBrowserWindow());
     });
   });
 

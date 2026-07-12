@@ -82,7 +82,7 @@ async function execChainSteps(page, stepsStr) {
         case 'yclick':
           await _browser.ensureClickable(args[0]);
           const ypos = await _browser.getElementScreenPos(args[0]);
-          await hyprctl.focusChromiumWindow();
+          await hyprctl.focusBrowserWindow();
           await sleep(50);
           await ydotool.naturalMouseMove(ypos.screenX, ypos.screenY, hyprctl.getCursorPos);
           await sleep(60 + Math.round(Math.random() * 30));
@@ -114,7 +114,7 @@ async function execChainSteps(page, stepsStr) {
         case 'ydrag':
           const dFromPos = await _browser.getElementScreenPos(args[0]);
           const dToPos = await _browser.getElementScreenPos(args[1]);
-          await hyprctl.focusChromiumWindow();
+          await hyprctl.focusBrowserWindow();
           await sleep(50);
           await ydotool.naturalMouseMove(dFromPos.screenX, dFromPos.screenY, hyprctl.getCursorPos);
           await sleep(80);
@@ -250,7 +250,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_click',
     {
-      description: 'PREFERRED click method — uses ydotool (system-level mouse, undetectable by anti-bot). Accepts numeric IDs (from observe/view_tree) or CSS selectors. Returns "changed" with added/removed elements. If error "element covered" or "covered by", use browser_press("Escape") first to dismiss modals. If error "Chrome window not found", use browser_click_pw instead (Playwright fallback, works without visible window). Set wait_until="networkidle" for clicks that navigate to a new page.',
+      description: 'PREFERRED click method — uses ydotool (system-level mouse, undetectable by anti-bot). Accepts numeric IDs (from observe/view_tree) or CSS selectors. Returns "changed" with added/removed elements. If error "element covered" or "covered by", use browser_press("Escape") first to dismiss modals. If error "Browser window not found", use browser_click_pw instead (Playwright fallback, works without visible window). Set wait_until="networkidle" for clicks that navigate to a new page.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector or numeric element ID'),
         wait_until: z.enum(['none', 'networkidle']).optional().default('none').describe('If "networkidle", waits for page to finish loading after click')
@@ -260,7 +260,7 @@ function register(server, browser) {
       const diff = await captureDiff();
       await browser.ensureClickable(selector);
       const pos = await browser.getElementScreenPos(selector);
-      await hyprctl.focusChromiumWindow();
+      await hyprctl.focusBrowserWindow();
       await sleep(50);
       await ydotool.naturalMouseMove(pos.screenX, pos.screenY, hyprctl.getCursorPos);
       await sleep(60 + Math.round(Math.random() * 30));
@@ -287,7 +287,7 @@ function register(server, browser) {
     },
     async ({ x, y, wait_until }) => {
       const diff = await captureDiff();
-      await hyprctl.focusChromiumWindow();
+      await hyprctl.focusBrowserWindow();
       await sleep(50);
       await ydotool.naturalMouseMove(x, y, hyprctl.getCursorPos);
       await sleep(60 + Math.round(Math.random() * 30));
@@ -305,7 +305,7 @@ function register(server, browser) {
   server.registerTool(
     'browser_click_pw',
     {
-      description: 'FALLBACK click — uses Playwright (detectable by anti-bot, but works without visible Chrome window). Use when browser_click fails with "Chrome window not found". Accepts numeric IDs or CSS selectors. Returns "changed" with added/removed elements. Set wait_until="networkidle" for navigation clicks.',
+      description: 'FALLBACK click — uses Playwright (detectable by anti-bot, but works without visible browser window). Use when browser_click fails with "Chrome window not found". Accepts numeric IDs or CSS selectors. Returns "changed" with added/removed elements. Set wait_until="networkidle" for navigation clicks.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector or numeric element ID'),
         wait_until: z.enum(['none', 'networkidle']).optional().default('none').describe('If "networkidle", waits for page to finish loading after click')
@@ -341,7 +341,7 @@ function register(server, browser) {
       const diff = await captureDiff();
       const fromPos = await browser.getElementScreenPos(from);
       const toPos = await browser.getElementScreenPos(to);
-      await hyprctl.focusChromiumWindow();
+      await hyprctl.focusBrowserWindow();
       await sleep(50);
       await ydotool.naturalMouseMove(fromPos.screenX, fromPos.screenY, hyprctl.getCursorPos);
       await sleep(80);
@@ -1004,7 +1004,7 @@ function register(server, browser) {
       if (isFullscreen) return enrich(page, { ok: true, fullscreen: true });
       const result = await page.evaluate(`document.documentElement.requestFullscreen().then(() => 'ok').catch(e => e.message)`);
       if (result !== 'ok') {
-        await hyprctl.focusChromiumWindow();
+        await hyprctl.focusBrowserWindow();
         await sleep(200);
         await page.keyboard.press('F11');
         await sleep(500);
@@ -1021,8 +1021,8 @@ function register(server, browser) {
     },
     async () => {
       const page = browser.getActivePage();
-      const windowPos = await hyprctl.getChromiumWindowPos();
-      if (!windowPos) throw new Error('No chromium-browser window found via hyprctl');
+      const windowPos = await hyprctl.getBrowserWindowPos();
+      if (!windowPos) throw new Error('No browser window found via hyprctl');
 
       await page.setContent(CALIBRATION_HTML);
       await sleep(500);
@@ -1055,7 +1055,7 @@ function register(server, browser) {
         await page.evaluate(() => { window.__brCalibrationHit = null; });
         const targetX = Math.round(windowPos.x + estOffsetX + box.x + box.width / 2);
         const targetY = Math.round(windowPos.y + estOffsetY + box.y + box.height / 2);
-        await hyprctl.focusChromiumWindow();
+        await hyprctl.focusBrowserWindow();
         await sleep(50);
         await ydotool.naturalMouseMove(targetX, targetY, hyprctl.getCursorPos);
         await sleep(60 + Math.round(Math.random() * 30));

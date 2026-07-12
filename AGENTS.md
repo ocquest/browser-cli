@@ -2,29 +2,30 @@
 
 ## Quick start
 ```bash
-npm install                               # no build step needed
-sudo ydotoold &                           # needs /dev/uinput access, or via ACL
+npm install
+npx camoufox-js fetch                     # downloads Camoufox (Firefox fork, ~557MB)
+sudo ydotoold &                           # only needed if BR_FORCE_YDOTOOL=1
 alias br="node $PWD/bin/br.js"
-br start                                  # launches headful Chromium + Express on :3030
+br start                                  # launches headful Camoufox (Firefox) + Express on :3030
 ```
 
 ## Architecture
 - **`bin/br.js`** — Thin entry point, delegates to `src/cli/index.js`.
 - **`src/cli/`** — CLI commands organized in modules under `commands/`. Uses `Commander.js`, sends HTTP to daemon on `localhost:3030`.
-- **`daemon.js`** — Express server running a persistent Chromium via `playwright-extra` + stealth plugin. Uses `chromium.launchPersistentContext`. Top-level async IIFE.
-- **`src/daemon/services/`** — Shared services: `state.js` (history, secrets, calibration, ID→XPath), `hyprctl.js` (Hyprland window management), `ydotool.js` (mouse simulation with natural movement).
+- **`daemon.js`** — Express server running a persistent Camoufox (Firefox fork) via `camoufox-js`. Uses `firefox.launchPersistentContext`. Top-level async IIFE.
+- **`src/daemon/services/`** — Shared services: `state.js` (history, secrets, calibration, ID→XPath), `hyprctl.js` (Hyprland window management), `ydotool.js` (mouse simulation fallback — only used when `BR_FORCE_YDOTOOL` is set).
 - **Sub-30 second start**: daemon writes PID to `daemon.pid`, CLI waits for `"br daemon running"` on stdout with a 5s timeout.
 
 ## Commands (all require running daemon)
 
-### Primary methods (ydotool — undetectable, recommended)
+### Primary methods (Camoufox Playwright — undetectable, recommended)
 | Command | Note |
 |---------|------|
-| `br yclick <id>` | **RECOMMENDED** — ydotool system-level click (undetectable); IDs come from `view-tree`. Automatically detects and dismisses cookie banners / modals before clicking. |
-| `br ydrag <fromId> <toId>` | ydotool drag-and-drop |
-| `br calibrate` | auto-calibrate ydotool click offset |
+| `br yclick <id>` | **RECOMMENDED** — uses Playwright's native click via Camoufox (undetectable C++-level input); IDs come from `view-tree`. Automatically detects and dismisses cookie banners / modals before clicking. Falls back to `ydotool` if `BR_FORCE_YDOTOOL=1`. |
+| `br ydrag <fromId> <toId>` | Playwright mouse drag-and-drop (Camoufox); falls back to ydotool if `BR_FORCE_YDOTOOL=1` |
+| `br calibrate` | no-op with Camoufox (Playwright clicks are pixel-accurate) |
 
-### Fallback methods (Playwright — detectable, use only if ydotool fails)
+### Fallback methods (ydotool — only if BR_FORCE_YDOTOOL=1)
 | Command | Note |
 |---------|------|
 | `br click <selectorOrId>` | FALLBACK — Playwright click (detectable) |
@@ -58,8 +59,8 @@ br start                                  # launches headful Chromium + Express 
 - **Hyprland-specific**: uses `hyprctl` for window focus, cursor position, and window geometry.
 - **New tabs** are automatically set as active.
 - **`fill-secret`** expects an **env var name** (not the secret value directly). Values are masked in `view-html`.
-- **Proxy**: daemon reads `HTTP_PROXY`/`HTTPS_PROXY` env vars and passes proxy config to Chromium automatically (including auth).
-- **Anti-detection**: uses `--disable-automation`, `--disable-blink-features=AutomationControlled`, and `context.addInitScript` to hide automation from bot detection.
+- **Proxy**: daemon reads `HTTP_PROXY`/`HTTPS_PROXY` env vars and passes proxy config to Camoufox automatically (including auth).
+- **Anti-detection**: uses Camoufox (Firefox fork) with C++-level fingerprint spoofing — patches `navigator.webdriver`, WebGL, AudioContext, WebRTC, etc. No JS injection needed.
 - **Tests**: `npm test` runs all tests via Node's built-in test runner. Tests for `state.js`, `ydotool.js`, `hyprctl.js`, and CLI `send.js` are in `test/`. No external test dependencies.
 - **Lint**: `npm run lint` — syntax checks all source files (no ESLint/Prettier/TypeScript).
 - **CI**: pushes to `main` auto-bump patch version and publish to npm (`@browsemake/browser-cli`). Weekly GitHub Release. Don't manually bump `version` in `package.json`.

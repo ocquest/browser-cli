@@ -1,14 +1,14 @@
 const util = require('util');
 const execAsync = util.promisify(require('child_process').exec);
 
-const BROWSER_CLASSES = ['chromium-browser', 'google-chrome', 'chrome', 'Chromium', 'Google-chrome'];
+const BROWSER_CLASSES = ['firefox', 'firefox-esr', 'Mozilla Firefox', 'camoufox'].map(c => c.toLowerCase());
 
 function findBrowserWindow(clients) {
   const lower = c => c.class.toLowerCase();
   return clients.find(c => BROWSER_CLASSES.includes(lower(c)));
 }
 
-async function getChromiumWindowPos() {
+async function getBrowserWindowPos() {
   try {
     const { stdout } = await execAsync('hyprctl clients -j');
     const clients = JSON.parse(stdout);
@@ -20,7 +20,7 @@ async function getChromiumWindowPos() {
   }
 }
 
-async function focusChromiumWindow() {
+async function focusBrowserWindow() {
   try {
     const { stdout } = await execAsync('hyprctl clients -j');
     const clients = JSON.parse(stdout);
@@ -37,4 +37,4 @@ async function getCursorPos() {
   return { x: parts[0], y: parts[1] };
 }
 
-module.exports = { getChromiumWindowPos, focusChromiumWindow, getCursorPos };
+module.exports = { getBrowserWindowPos, focusBrowserWindow, getCursorPos };

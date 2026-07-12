@@ -1,6 +1,5 @@
-const { chromium } = require('playwright-extra');
-const stealth = require('puppeteer-extra-plugin-stealth')();
-chromium.use(stealth);
+const { launchOptions: getCamoufoxOpts } = require('camoufox-js');
+const { firefox } = require('playwright');
 
 const fs = require('fs');
 const util = require('util');
@@ -92,30 +91,24 @@ class BrowserManager {
     const dir = userDataDir || path.join(os.homedir(), '.br-profile');
     const proxyConfig = getProxyConfig();
 
-    const launchOptions = {
+    const camoufoxOpts = await getCamoufoxOpts({
       headless: false,
-      viewport: null,
-      channel: 'chrome',
+      blockImages: false,
+      screen: { width: 1920, height: 1080 },
+    });
+    const launchOptions = {
+      ...camoufoxOpts,
       args: [
         '--start-fullscreen',
-        '--disable-session-crashed-bubble',
-        '--disable-features=SessionCrashedBubble,InfiniteSessionRestore',
-        '--disable-automation',
-        '--disable-blink-features=AutomationControlled',
-        '--no-proxy-server'
+        ...(camoufoxOpts.args || []),
       ],
-      ignoreDefaultArgs: ['--enable-automation'],
       proxy: proxyConfig.server
         ? { server: proxyConfig.server, username: proxyConfig.username, password: proxyConfig.password }
         : undefined
     };
 
-    this.context = await chromium.launchPersistentContext(dir, launchOptions);
+    this.context = await firefox.launchPersistentContext(dir, launchOptions);
     this.browser = await this.context.browser();
-
-    await this.context.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    });
 
     const initialPage = await this.context.newPage();
     this.pages.push(initialPage);
@@ -145,7 +138,7 @@ class BrowserManager {
     });
 
     try {
-      await hyprctl.focusChromiumWindow();
+      await hyprctl.focusBrowserWindow();
     } catch (_) {}
 
     this.ready = true;
@@ -325,8 +318,8 @@ class BrowserManager {
     await sleep(100);
     const box = await element.boundingBox();
     if (!box) throw new Error('Element has no bounding box (not visible?)');
-    const windowPos = await hyprctl.getChromiumWindowPos();
-    if (!windowPos) throw new Error('Chrome window not found on your desktop. browser_click (ydotool) needs a visible Chrome window managed by your window manager. Use browser_click_pw(selector) instead as a fallback — it works without a visible window.');
+    const windowPos = await hyprctl.getBrowserWindowPos();
+    if (!windowPos) throw new Error('Browser window not found on your desktop. browser_click (ydotool) needs a visible browser window managed by your window manager. Use browser_click_pw(selector) instead as a fallback — it works without a visible window.');
     const offset = state.getCalibrationOffset();
     const marginX = Math.max(2, box.width * 0.15);
     const marginY = Math.max(2, box.height * 0.15);

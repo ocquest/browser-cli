@@ -1,8 +1,6 @@
 const express = require('express');
-const { chromium } = require('playwright-extra');
-const stealth = require('puppeteer-extra-plugin-stealth')();
-
-chromium.use(stealth);
+const { launchOptions: getCamoufoxOpts } = require('camoufox-js');
+const { firefox } = require('playwright');
 const fs = require('fs');
 const util = require('util');
 const execAsync = util.promisify(require('child_process').exec);
@@ -34,72 +32,23 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
 
 (async () => {
   const proxyConfig = getProxyConfig();
-  const launchOptions = {
+  const camoufoxOpts = await getCamoufoxOpts({
     headless: false,
-    viewport: null,
-    channel: 'chrome',
-    args: ['--start-fullscreen', '--disable-session-crashed-bubble', '--disable-features=SessionCrashedBubble,InfiniteSessionRestore', '--disable-automation', '--disable-blink-features=AutomationControlled'],
-    ignoreDefaultArgs: ['--enable-automation'],
-    proxy: proxyConfig.server ? { server: proxyConfig.server, username: proxyConfig.username, password: proxyConfig.password } : undefined
-  };
-  const context = await chromium.launchPersistentContext(tmpUserDataDir, launchOptions);
-  console.log('[DBG] Chrome version:', (await context.browser()).version());
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-
-    // Auto-login Swagbucks via Google Sign-In
-    const GOOGLE_SELECTORS = [
-      '[data-test="google-signin"]', '[data-testid="google-signin"]',
-      '.google-signin-btn', '.S9gUrf-YoZ4jf', /* GIS container */
-      'button[class*="google"]', '[class*="google"][class*="btn"]',
-      '[aria-label*="Google" i]',
-    ];
-
-    function tryClick(el) {
-      if (el && el.offsetParent !== null && el.getBoundingClientRect().width > 0) {
-        if (el.tagName === 'IFRAME') {
-          // GIS iframe — click center
-          const rect = el.getBoundingClientRect();
-          el.dispatchEvent(new MouseEvent('click', {
-            bubbles: true, cancelable: true,
-            clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2,
-            view: window,
-          }));
-        } else {
-          el.click();
-        }
-        return true;
-      }
-      return false;
-    }
-
-    function tryGoogleSignIn() {
-      if (!window.location.hostname.includes('swagbucks.com')) return false;
-      for (const sel of GOOGLE_SELECTORS) {
-        const el = document.querySelector(sel);
-        if (tryClick(el)) return true;
-      }
-      // GIS iframe fallback: <iframe src*="accounts.google.com/gsi/"
-      const iframes = document.querySelectorAll('iframe[src*="accounts.google.com"]');
-      for (const f of iframes) {
-        if (tryClick(f)) return true;
-      }
-      return false;
-    }
-
-    window.addEventListener('load', () => { setTimeout(tryGoogleSignIn, 2000); });
-
-    const observer = new MutationObserver(() => {
-      if (window.location.hostname.includes('swagbucks.com')) tryGoogleSignIn();
-    });
-    if (document.body) {
-      observer.observe(document.body, { childList: true, subtree: true });
-    } else {
-      document.addEventListener('DOMContentLoaded', () => {
-        observer.observe(document.body, { childList: true, subtree: true });
-      });
-    }
+    blockImages: false,
+    screen: { width: 1920, height: 1080 },
   });
+  const launchOpts = {
+    ...camoufoxOpts,
+    args: [
+      '--start-fullscreen',
+      ...(camoufoxOpts.args || []),
+    ],
+    proxy: proxyConfig.server
+      ? { server: proxyConfig.server, username: proxyConfig.username, password: proxyConfig.password }
+      : undefined
+  };
+  const context = await firefox.launchPersistentContext(tmpUserDataDir, launchOpts);
+  console.log('[DBG] Camoufox version:', (await context.browser()).version());
   const browser = await context.browser();
   let pages = [];
   let activePage;
@@ -111,7 +60,7 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
   // Focus browser window (fullscreen via --start-fullscreen arg)
   setTimeout(async () => {
     try {
-      await execAsync('hyprctl dispatch focuswindow class:Chromium-browser');
+      await execAsync('hyprctl dispatch focuswindow class:firefox');
     } catch (_) {}
   }, 1000);
 
@@ -362,15 +311,25 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
 
   app.post('/yclick', async (req, res) => {
     try {
-      await ensureClickable(req.body.selector);
-      const pos = await getElementScreenPos(req.body.selector);
-      await hyprctl.focusChromiumWindow();
-      await new Promise(r => setTimeout(r, 50));
-      await ydotool.naturalMouseMove(pos.screenX, pos.screenY, hyprctl.getCursorPos);
-      await new Promise(r => setTimeout(r, 60 + Math.round(Math.random() * 30)));
-      await execAsync(`ydotool click C0`);
-      state.record('yclick', { selector: req.body.selector, ...pos });
-      res.json({ ok: true, selector: req.body.selector, x: pos.screenX, y: pos.screenY });
+      const page = getActivePage();
+      const forceYdotool = req.body.force === 'ydotool' || process.env.BR_FORCE_YDOTOOL;
+      if (forceYdotool) {
+        await ensureClickable(req.body.selector);
+        const pos = await getElementScreenPos(req.body.selector);
+        await hyprctl.focusBrowserWindow();
+        await new Promise(r => setTimeout(r, 50));
+        await ydotool.naturalMouseMove(pos.screenX, pos.screenY, hyprctl.getCursorPos);
+        await new Promise(r => setTimeout(r, 60 + Math.round(Math.random() * 30)));
+        await execAsync('ydotool click C0');
+        state.record('yclick', { selector: req.body.selector, ...pos, force: 'ydotool' });
+        res.json({ ok: true, selector: req.body.selector, x: pos.screenX, y: pos.screenY, method: 'ydotool' });
+      } else {
+        await ensureClickable(req.body.selector);
+        const { element } = await findElement(req.body.selector);
+        await element.click();
+        state.record('yclick', { selector: req.body.selector });
+        res.json({ ok: true, selector: req.body.selector, method: 'playwright' });
+      }
     } catch (err) {
       res.status(500).send(err.message);
     }
@@ -380,11 +339,17 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
     try {
       const { x, y } = req.body;
       if (x === undefined || y === undefined) return res.status(400).send('missing x or y');
-      await hyprctl.focusChromiumWindow();
-      await new Promise(r => setTimeout(r, 50));
-      await ydotool.naturalMouseMove(x, y, hyprctl.getCursorPos);
-      await new Promise(r => setTimeout(r, 60 + Math.round(Math.random() * 30)));
-      await execAsync('ydotool click C0');
+      const forceYdotool = process.env.BR_FORCE_YDOTOOL;
+      if (forceYdotool) {
+        await hyprctl.focusBrowserWindow();
+        await new Promise(r => setTimeout(r, 50));
+        await ydotool.naturalMouseMove(x, y, hyprctl.getCursorPos);
+        await new Promise(r => setTimeout(r, 60 + Math.round(Math.random() * 30)));
+        await execAsync('ydotool click C0');
+      } else {
+        const page = getActivePage();
+        await page.mouse.click(x, y);
+      }
       state.record('yclick-at', { x, y });
       res.json({ ok: true, x, y });
     } catch (err) {
@@ -680,15 +645,19 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
             break;
           case 'yclick':
             if (!args[0]) throw new Error('yclick requires a selector');
-            await ensureClickable(args[0]);
-            const ypos = await getElementScreenPos(args[0]);
-            await hyprctl.focusChromiumWindow();
-            await new Promise(r => setTimeout(r, 50));
-            await ydotool.naturalMouseMove(ypos.screenX, ypos.screenY, hyprctl.getCursorPos);
-            await new Promise(r => setTimeout(r, 60 + Math.round(Math.random() * 30)));
-            await execAsync(`ydotool click C0`);
-            entry.x = ypos.screenX;
-            entry.y = ypos.screenY;
+            if (process.env.BR_FORCE_YDOTOOL) {
+              await ensureClickable(args[0]);
+              const ypos = await getElementScreenPos(args[0]);
+              await hyprctl.focusBrowserWindow();
+              await new Promise(r => setTimeout(r, 50));
+              await ydotool.naturalMouseMove(ypos.screenX, ypos.screenY, hyprctl.getCursorPos);
+              await new Promise(r => setTimeout(r, 60 + Math.round(Math.random() * 30)));
+              await execAsync('ydotool click C0');
+              entry.x = ypos.screenX;
+              entry.y = ypos.screenY;
+            } else {
+              await page.click(args[0]);
+            }
             break;
           case 'type':
             const typeIdx = args[0] === '--precise' ? 1 : 0;
@@ -715,21 +684,41 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
             break;
           case 'ydrag':
             if (!args[0] || !args[1]) throw new Error('ydrag requires from and to selectors');
-            const fromPos = await getElementScreenPos(args[0]);
-            const toPos = await getElementScreenPos(args[1]);
-            await hyprctl.focusChromiumWindow();
-            await new Promise(r => setTimeout(r, 50));
-            await ydotool.naturalMouseMove(fromPos.screenX, fromPos.screenY, hyprctl.getCursorPos);
-            await new Promise(r => setTimeout(r, 80));
-            await execAsync('ydotool click 0x40');
-            await new Promise(r => setTimeout(r, 120));
-            await ydotool.naturalMouseMove(toPos.screenX, toPos.screenY, hyprctl.getCursorPos);
-            await new Promise(r => setTimeout(r, 80));
-            await execAsync('ydotool click 0x80');
-            entry.fromX = fromPos.screenX;
-            entry.fromY = fromPos.screenY;
-            entry.toX = toPos.screenX;
-            entry.toY = toPos.screenY;
+            if (process.env.BR_FORCE_YDOTOOL) {
+              const fromPos = await getElementScreenPos(args[0]);
+              const toPos = await getElementScreenPos(args[1]);
+              await hyprctl.focusBrowserWindow();
+              await new Promise(r => setTimeout(r, 50));
+              await ydotool.naturalMouseMove(fromPos.screenX, fromPos.screenY, hyprctl.getCursorPos);
+              await new Promise(r => setTimeout(r, 80));
+              await execAsync('ydotool click 0x40');
+              await new Promise(r => setTimeout(r, 120));
+              await ydotool.naturalMouseMove(toPos.screenX, toPos.screenY, hyprctl.getCursorPos);
+              await new Promise(r => setTimeout(r, 80));
+              await execAsync('ydotool click 0x80');
+              entry.fromX = fromPos.screenX;
+              entry.fromY = fromPos.screenY;
+              entry.toX = toPos.screenX;
+              entry.toY = toPos.screenY;
+            } else {
+              const fromEl = await findElement(args[0]);
+              const toEl = await findElement(args[1]);
+              const fromBox = await fromEl.element.boundingBox();
+              const toBox = await toEl.element.boundingBox();
+              if (!fromBox || !toBox) throw new Error('Element not visible');
+              const sX = fromBox.x + fromBox.width / 2;
+              const sY = fromBox.y + fromBox.height / 2;
+              const eX = toBox.x + toBox.width / 2;
+              const eY = toBox.y + toBox.height / 2;
+              await page.mouse.move(sX, sY, { steps: 10 });
+              await page.mouse.down();
+              await page.mouse.move(eX, eY, { steps: 20 });
+              await page.mouse.up();
+              entry.fromX = Math.round(sX);
+              entry.fromY = Math.round(sY);
+              entry.toX = Math.round(eX);
+              entry.toY = Math.round(eY);
+            }
             break;
           case 'screenshot':
             const ssBuffer = await page.screenshot({ type: 'png' });
@@ -989,7 +978,7 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
       }
       const result = await page.evaluate(`document.documentElement.requestFullscreen().then(() => 'ok').catch(e => e.message)`);
       if (result !== 'ok') {
-        await hyprctl.focusChromiumWindow();
+        await hyprctl.focusBrowserWindow();
         await new Promise(r => setTimeout(r, 200));
         await page.keyboard.press('F11');
         await new Promise(r => setTimeout(r, 500));
@@ -1152,85 +1141,7 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
 
   app.get('/calibrate', async (req, res) => {
     try {
-      const page = getActivePage();
-      const windowPos = await hyprctl.getChromiumWindowPos();
-      if (!windowPos) {
-        return res.status(400).send('No chromium-browser window found via hyprctl');
-      }
-
-      // Navigate to calibration page
-      await page.goto(`http://localhost:${port}/calibrate-page`);
-      await page.waitForTimeout(500);
-
-      // Re-enter fullscreen (navigation exits it)
-      await page.evaluate(`document.documentElement.requestFullscreen().catch(() => {})`);
-      await page.waitForTimeout(500);
-
-      // Estimate initial offset from chrome height
-      const viewport = await page.evaluate(() => ({
-        innerWidth: window.innerWidth,
-        innerHeight: window.innerHeight,
-        outerWidth: window.outerWidth,
-        outerHeight: window.outerHeight
-      }));
-      let estOffsetY = Math.max(0, viewport.outerHeight - viewport.innerHeight);
-      let estOffsetX = Math.max(0, viewport.outerWidth - viewport.innerWidth);
-
-      // Test points: corners + center
-      const testPoints = [
-        { row: 0, col: 0, label: 'top-left' },
-        { row: 0, col: 4, label: 'top-right' },
-        { row: 4, col: 0, label: 'bottom-left' },
-        { row: 4, col: 4, label: 'bottom-right' },
-        { row: 2, col: 2, label: 'center' },
-      ];
-
-      const errors = [];
-      for (const tp of testPoints) {
-        const cell = await page.$(`#cell-${tp.row}-${tp.col}`);
-        if (!cell) continue;
-        const box = await cell.boundingBox();
-        if (!box) continue;
-
-        // Clear previous hit
-        await page.evaluate(() => { window.__brCalibrationHit = null; });
-
-        // Calculate expected screen position using current offset estimate
-        const targetX = Math.round(windowPos.x + estOffsetX + box.x + box.width / 2);
-        const targetY = Math.round(windowPos.y + estOffsetY + box.y + box.height / 2);
-
-        await hyprctl.focusChromiumWindow();
-        await new Promise(r => setTimeout(r, 50));
-        await ydotool.naturalMouseMove(targetX, targetY, hyprctl.getCursorPos);
-        await new Promise(r => setTimeout(r, 60 + Math.round(Math.random() * 30)));
-        await execAsync(`ydotool click C0`);
-        await page.waitForTimeout(200);
-
-        const hit = await page.evaluate(() => window.__brCalibrationHit);
-        if (hit) {
-          const errX = hit.col - tp.col;
-          const errY = hit.row - tp.row;
-          errors.push({ expected: tp, actual: hit, errX, errY, targetX, targetY });
-        }
-      }
-
-      // Compute average error
-      let avgErrX = 0, avgErrY = 0;
-      if (errors.length > 0) {
-        avgErrX = Math.round(errors.reduce((s, e) => s + e.errX, 0) / errors.length);
-        avgErrY = Math.round(errors.reduce((s, e) => s + e.errY, 0) / errors.length);
-      }
-
-      // Adjust offset based on error: each cell is 86px apart (80px + 6px gap)
-      const cellPitch = 86;
-      const newCalibrationOffset = {
-        x: estOffsetX + avgErrX * cellPitch,
-        y: estOffsetY + avgErrY * cellPitch
-      };
-      state.setCalibrationOffset(newCalibrationOffset);
-
-      state.record('calibrate', { windowPos, viewport, estimatedOffset: { x: estOffsetX, y: estOffsetY }, errors, avgErrX, avgErrY, calibrationOffset: newCalibrationOffset });
-      res.json({ windowPos, viewport, estimatedOffset: { x: estOffsetX, y: estOffsetY }, errors, avgErrX, avgErrY, calibrationOffset: newCalibrationOffset });
+      res.json({ note: 'Calibration not needed with Camoufox (Playwright clicks are pixel-accurate). ydotool fallback uses default offset.', offset: state.getCalibrationOffset() });
     } catch (err) {
       res.status(500).send(err.message + " " + err.stack);
     }
@@ -1353,8 +1264,8 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
     await new Promise(r => setTimeout(r, 100));
     const box = await element.boundingBox();
     if (!box) throw new Error('Element has no bounding box (not visible?)');
-    const windowPos = await hyprctl.getChromiumWindowPos();
-    if (!windowPos) throw new Error('No chromium-browser window found via hyprctl');
+    const windowPos = await hyprctl.getBrowserWindowPos();
+    if (!windowPos) throw new Error('No browser window found via hyprctl');
     const offset = state.getCalibrationOffset();
     const marginX = Math.max(2, box.width * 0.15);
     const marginY = Math.max(2, box.height * 0.15);
@@ -1482,17 +1393,35 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
     const { from, to } = req.body;
     if (!from || !to) return res.status(400).send('missing from/to');
     try {
-      const fromPos = await getElementScreenPos(from);
-      const toPos = await getElementScreenPos(to);
-      await hyprctl.focusChromiumWindow();
-      await new Promise(r => setTimeout(r, 50));
-      await ydotool.naturalMouseMove(fromPos.screenX, fromPos.screenY, hyprctl.getCursorPos);
-      await new Promise(r => setTimeout(r, 80));
-      await execAsync(`ydotool click 0x40`); // left button down
-      await new Promise(r => setTimeout(r, 120));
-      await ydotool.naturalMouseMove(toPos.screenX, toPos.screenY, hyprctl.getCursorPos);
-      await new Promise(r => setTimeout(r, 80));
-      await execAsync(`ydotool click 0x80`); // left button up
+      const page = getActivePage();
+      const forceYdotool = process.env.BR_FORCE_YDOTOOL;
+      if (forceYdotool) {
+        const fromPos = await getElementScreenPos(from);
+        const toPos = await getElementScreenPos(to);
+        await hyprctl.focusBrowserWindow();
+        await new Promise(r => setTimeout(r, 50));
+        await ydotool.naturalMouseMove(fromPos.screenX, fromPos.screenY, hyprctl.getCursorPos);
+        await new Promise(r => setTimeout(r, 80));
+        await execAsync('ydotool click 0x40');
+        await new Promise(r => setTimeout(r, 120));
+        await ydotool.naturalMouseMove(toPos.screenX, toPos.screenY, hyprctl.getCursorPos);
+        await new Promise(r => setTimeout(r, 80));
+        await execAsync('ydotool click 0x80');
+      } else {
+        const fromEl = await findElement(from);
+        const toEl = await findElement(to);
+        const fromBox = await fromEl.element.boundingBox();
+        const toBox = await toEl.element.boundingBox();
+        if (!fromBox || !toBox) throw new Error('Element not visible');
+        const startX = fromBox.x + fromBox.width / 2;
+        const startY = fromBox.y + fromBox.height / 2;
+        const endX = toBox.x + toBox.width / 2;
+        const endY = toBox.y + toBox.height / 2;
+        await page.mouse.move(startX, startY, { steps: 10 });
+        await page.mouse.down();
+        await page.mouse.move(endX, endY, { steps: 20 });
+        await page.mouse.up();
+      }
       state.record('ydrag', { from, to });
       res.send('ok');
     } catch (err) {
