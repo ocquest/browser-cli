@@ -95,6 +95,9 @@ class BrowserManager {
       headless: false,
       blockImages: false,
       screen: { width: 1920, height: 1080 },
+      humanize: true,
+      'humanize:maxTime': 1.5,
+      'humanize:minTime': 0.3,
     });
     const launchOptions = {
       ...camoufoxOpts,
