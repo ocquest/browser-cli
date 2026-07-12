@@ -376,6 +376,22 @@ const tmpUserDataDir = path.join(os.homedir(), '.br-profile');
     }
   });
 
+  app.post('/yclick-at', async (req, res) => {
+    try {
+      const { x, y } = req.body;
+      if (x === undefined || y === undefined) return res.status(400).send('missing x or y');
+      await hyprctl.focusChromiumWindow();
+      await new Promise(r => setTimeout(r, 50));
+      await ydotool.naturalMouseMove(x, y, hyprctl.getCursorPos);
+      await new Promise(r => setTimeout(r, 60 + Math.round(Math.random() * 30)));
+      await execAsync('ydotool click C0');
+      state.record('yclick-at', { x, y });
+      res.json({ ok: true, x, y });
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
+
   app.post('/evaluate', async (req, res) => {
     const { code } = req.body;
     if (!code) return res.status(400).send('missing code');

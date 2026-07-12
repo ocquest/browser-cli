@@ -29,6 +29,21 @@ module.exports = function (program) {
     });
 
   program
+    .command('yclick-at')
+    .description('Click at absolute screen coordinates using ydotool (for iframes like reCAPTCHA).')
+    .argument('<x>', 'Screen X coordinate (number)')
+    .argument('<y>', 'Screen Y coordinate (number)')
+    .action(async (x, y) => {
+      try {
+        const res = await send('/yclick-at', 'POST', { x: parseInt(x), y: parseInt(y) });
+        const data = JSON.parse(res);
+        console.log('yclicked at', `(${data.x}, ${data.y})`);
+      } catch (error) {
+        console.error('Error clicking at coordinates:', error);
+      }
+    });
+
+  program
     .command('ydrag')
     .description('Drag from one element to another using ydotool (mousedown to move to mouseup).')
     .argument('<fromSelector>', 'Node ID or selector for the source (draggable) element.')

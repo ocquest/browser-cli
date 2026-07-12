@@ -276,6 +276,33 @@ function register(server, browser) {
   );
 
   server.registerTool(
+    'browser_click_at',
+    {
+      description: 'Click at absolute screen pixel coordinates using ydotool (system-level, undetectable). Use when elements are inside cross-origin iframes (e.g. reCAPTCHA) where CSS selectors cannot reach. Get coordinates via browser_evaluate + getBoundingClientRect().',
+      inputSchema: z.object({
+        x: z.number().describe('Absolute screen X coordinate'),
+        y: z.number().describe('Absolute screen Y coordinate'),
+        wait_until: z.enum(['none', 'networkidle']).optional().default('none').describe('If "networkidle", waits for page to finish loading after click')
+      })
+    },
+    async ({ x, y, wait_until }) => {
+      const diff = await captureDiff();
+      await hyprctl.focusChromiumWindow();
+      await sleep(50);
+      await ydotool.naturalMouseMove(x, y, hyprctl.getCursorPos);
+      await sleep(60 + Math.round(Math.random() * 30));
+      await execAsync('ydotool click C0');
+      const clickPage = browser.getActivePage();
+      if (wait_until === 'networkidle') {
+        await clickPage.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+      }
+      state.record('yclick-at', { x, y });
+      const changed = await diff.after();
+      return enrich(clickPage, { ok: true, x, y, changed });
+    }
+  );
+
+  server.registerTool(
     'browser_click_pw',
     {
       description: 'FALLBACK click — uses Playwright (detectable by anti-bot, but works without visible Chrome window). Use when browser_click fails with "Chrome window not found". Accepts numeric IDs or CSS selectors. Returns "changed" with added/removed elements. Set wait_until="networkidle" for navigation clicks.',
@@ -1122,5 +1149,6 @@ function register(server, browser) {
       return { content: [{ type: 'text', text: result }] };
     }
   );
+}
 
 module.exports = { register };
